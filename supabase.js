@@ -19,11 +19,11 @@ async function identifySender(phoneNumber) {
     .from('tenants')
     .select(`
       *,
-      units(*),
+      units!tenants_unit_id_fkey(*),
       leases(*)
     `)
     .eq('phone_number', phoneNumber)
-    .single();
+    .maybeSingle();
 
   const isManager = phoneNumber === process.env.MANAGER_PHONE;
 
@@ -61,7 +61,7 @@ async function getTenantProfile(identifier) {
     .from('tenants')
     .select(`
       *,
-      units(*),
+      units!tenants_unit_id_fkey(*),
       leases(*),
       rent_payments(*)
     `)
