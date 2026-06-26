@@ -1,17 +1,56 @@
 require('dotenv').config();
+const dns = require('dns');
 const { createClient } = require('@supabase/supabase-js');
 const twilio = require('twilio');
 
-const supabaseOptions = {};
+// Avoid IPv6 resolution issues on Railway/container hosts
+dns.setDefaultResultOrder('ipv4first');
+
+async function fetchWithRetry(url, options = {}, retries = 3) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    try {
+      return await fetch(url, {
+        ...options,
+        signal: options.signal || AbortSignal.timeout(10000),
+      });
+    } catch (error) {
+      lastError = error;
+      console.warn(`Supabase fetch attempt ${attempt}/${retries} failed:`, error.message);
+      if (attempt < retries) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 400));
+      }
+    }
+  }
+
+  throw lastError;
+}
+
+const supabaseOptions = {
+  global: { fetch: fetchWithRetry },
+};
 if (typeof globalThis.WebSocket === 'undefined') {
   supabaseOptions.realtime = { transport: require('ws') };
 }
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY,
-  supabaseOptions
-);
+function getSupabaseConfig() {
+  const url = process.env.SUPABASE_URL?.trim();
+  const key = process.env.SUPABASE_SERVICE_KEY?.trim();
+
+  if (!url || !key) {
+    throw new Error('SUPABASE_URL and SUPABASE_SERVICE_KEY must be set');
+  }
+
+  if (!url.startsWith('https://')) {
+    throw new Error('SUPABASE_URL must start with https://');
+  }
+
+  return { url, key };
+}
+
+const { url: supabaseUrl, key: supabaseKey } = getSupabaseConfig();
+const supabase = createClient(supabaseUrl, supabaseKey, supabaseOptions);
 
 let twilioClient;
 function getTwilioClient() {
@@ -416,6 +455,31 @@ async function notifyManager(message) {
   return sendWhatsAppReply(process.env.MANAGER_PHONE, message);
 }
 
+async function checkSupabaseConnection() {
+  const host = new URL(supabaseUrl).host;
+  const started = Date.now();
+
+  const { error } = await supabase.from('units').select('id').limit(1);
+  const ms = Date.now() - started;
+
+  if (error) {
+    console.error(`Supabase check failed (${host}, ${ms}ms):`, error.message);
+    return { ok: false, ms, error };
+  }
+
+  console.log(`Supabase connected (${host}, ${ms}ms)`);
+  return { ok: true, ms };
+}
+
+function formatDbError(error) {
+  if (!error) return null;
+  const message = error.message || String(error);
+  if (message.includes('fetch failed') || message.includes('ECONNREFUSED') || message.includes('ENOTFOUND')) {
+    return 'Could not reach the database. Check Supabase URL/key on Railway and try again.';
+  }
+  return `Database error: ${message}`;
+}
+
 module.exports = {
   supabase,
   identifySender,
@@ -436,6 +500,8 @@ module.exports = {
   clearSession,
   notifyManager,
   sendWhatsAppReply,
+  checkSupabaseConnection,
+  formatDbError,
   monthBounds,
   sanitizeFilterValue,
 };

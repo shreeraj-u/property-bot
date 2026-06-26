@@ -6,6 +6,7 @@ const {
   getTenantNextPaymentSummary,
   getLeaseDocument,
   listOpenComplaints,
+  formatDbError,
 } = require('../supabase');
 const {
   formatRentRoll,
@@ -24,33 +25,33 @@ async function executeManagerTool(tool, input) {
       const month = input.month || new Date().toISOString().slice(0, 7);
       const status = input.status || 'all';
       const { data, error } = await getRentStatus(month, status);
-      if (error) return `Could not fetch rent data: ${error.message}`;
+      if (error) return formatDbError(error) || 'Could not fetch rent data.';
       return formatRentRoll(data, month);
     }
     case 'expiring_leases': {
       const days = input.days || 60;
       const { data, error } = await getExpiringLeases(days);
-      if (error) return `Could not fetch leases: ${error.message}`;
+      if (error) return formatDbError(error) || 'Could not fetch leases.';
       return formatExpiringLeases(data);
     }
     case 'tenant_lookup': {
       if (!input.identifier) return 'Please provide a unit number or tenant name.';
       const { data, error } = await getTenantProfile(input.identifier);
-      if (error) return `Lookup failed: ${error.message}`;
+      if (error) return formatDbError(error) || 'Lookup failed.';
       if (!data) return 'Tenant not found.';
       return formatTenantProfile(data);
     }
     case 'tenant_next_payment': {
       if (!input.identifier) return 'Please provide a tenant name or unit number.';
       const { data, error } = await getTenantNextPaymentSummary(input.identifier);
-      if (error) return `Lookup failed: ${error.message}`;
+      if (error) return formatDbError(error) || 'Lookup failed.';
       return formatNextRentPayment(data);
     }
     case 'tenant_monthly_rent': {
       if (!input.identifier) return 'Please provide a tenant name or unit number.';
       const month = input.month || new Date().toISOString().slice(0, 7);
       const { data, error } = await getTenantMonthlyPayment(input.identifier, month);
-      if (error) return `Lookup failed: ${error.message}`;
+      if (error) return formatDbError(error) || 'Lookup failed.';
       if (!data?.tenant) return 'Tenant not found.';
       return formatTenantMonthlyRent(data.tenant, data.payment, month);
     }
@@ -67,7 +68,7 @@ async function executeManagerTool(tool, input) {
     }
     case 'open_complaints': {
       const { data, error } = await listOpenComplaints();
-      if (error) return `Could not fetch complaints: ${error.message}`;
+      if (error) return formatDbError(error) || 'Could not fetch complaints.';
       return formatComplaints(data);
     }
     case 'help':

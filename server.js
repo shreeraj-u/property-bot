@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const twilio = require('twilio');
 const { handleIncomingMessage, handleFirstMessage } = require('./bot/handler');
-const { sendWhatsAppReply } = require('./supabase');
+const { sendWhatsAppReply, checkSupabaseConnection } = require('./supabase');
 
 const app = express();
 app.set('trust proxy', true);
@@ -114,10 +114,15 @@ app.post('/webhook', validateTwilioRequest, async (req, res) => {
 app.get('/', (req, res) => res.send('Property bot is running'));
 
 if (require.main === module) {
-  app.listen(process.env.PORT || 3000, () => {
+  app.listen(process.env.PORT || 3000, async () => {
     console.log(
       `Server running on port ${process.env.PORT || 3000} (async webhook: ${USE_ASYNC_WEBHOOK})`
     );
+    try {
+      await checkSupabaseConnection();
+    } catch (error) {
+      console.error('Supabase startup check error:', error.message);
+    }
   });
 }
 
