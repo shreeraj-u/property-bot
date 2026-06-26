@@ -382,30 +382,38 @@ async function clearSession(phoneNumber) {
   return { error };
 }
 
-async function notifyManager(message) {
+async function sendWhatsAppReply(phoneNumber, messages) {
   const from = process.env.TWILIO_WHATSAPP_FROM;
-  const managerPhone = process.env.MANAGER_PHONE;
-
-  if (!from || !managerPhone) {
-    console.warn('notifyManager skipped: TWILIO_WHATSAPP_FROM or MANAGER_PHONE not set');
-    return { error: new Error('Missing Twilio WhatsApp configuration') };
+  if (!from) {
+    console.warn('sendWhatsAppReply skipped: TWILIO_WHATSAPP_FROM not set');
+    return { error: new Error('Missing TWILIO_WHATSAPP_FROM') };
   }
 
-  const to = managerPhone.startsWith('whatsapp:')
-    ? managerPhone
-    : `whatsapp:${managerPhone}`;
+  const to = phoneNumber.startsWith('whatsapp:')
+    ? phoneNumber
+    : `whatsapp:${phoneNumber}`;
+  const list = Array.isArray(messages) ? messages : [messages];
 
   try {
-    await getTwilioClient().messages.create({
-      from,
-      to,
-      body: message,
-    });
+    for (const body of list) {
+      if (body) {
+        await getTwilioClient().messages.create({ from, to, body });
+      }
+    }
     return { error: null };
   } catch (error) {
-    console.error('notifyManager failed:', error.message);
+    console.error('sendWhatsAppReply failed:', error.message);
     return { error };
   }
+}
+
+async function notifyManager(message) {
+  if (!process.env.MANAGER_PHONE) {
+    console.warn('notifyManager skipped: MANAGER_PHONE not set');
+    return { error: new Error('Missing MANAGER_PHONE') };
+  }
+
+  return sendWhatsAppReply(process.env.MANAGER_PHONE, message);
 }
 
 module.exports = {
@@ -427,6 +435,7 @@ module.exports = {
   saveSession,
   clearSession,
   notifyManager,
+  sendWhatsAppReply,
   monthBounds,
   sanitizeFilterValue,
 };
