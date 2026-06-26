@@ -48,4 +48,11 @@ describe('toolParams', () => {
     assert.match(text, /block B/);
     assert.match(text, /overdue/);
   });
+
+  it('normalizes idempotently when input already has filters', () => {
+    const first = normalizeToolCall('rent_roll', { status: 'overdue', block: 'C' });
+    const second = normalizeToolCall(first.tool, first.input);
+    assert.equal(second.input.filters.status, 'overdue');
+    assert.equal(second.input.filters.block, 'C');
+  });
 });

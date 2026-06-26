@@ -117,27 +117,36 @@ function normalizePhone(value) {
   return phone.startsWith('+') ? phone : `+${phone.replace(/\D/g, '')}`;
 }
 
+function flattenToolInput(input = {}) {
+  if (!input.filters || typeof input.filters !== 'object') {
+    return { ...input };
+  }
+  const { filters, ...rest } = input;
+  return { ...filters, ...rest };
+}
+
 function buildFilters(input = {}) {
+  const source = flattenToolInput(input);
   return {
-    month: normalizeMonth(input.month) || new Date().toISOString().slice(0, 7),
-    status: normalizeStatus(input.status),
-    block: normalizeBlock(input.block),
-    floor: normalizeFloor(input.floor),
-    unit_number: normalizeUnitNumber(input.unit_number),
-    unit_type: normalizeUnitType(input.unit_type),
-    tenant_name: cleanString(input.tenant_name),
-    phone: normalizePhone(input.phone),
-    category: normalizeCategory(input.category),
-    complaint_status: normalizeComplaintStatus(input.complaint_status),
-    days: normalizeDays(input.days),
-    min_rent: normalizeAmount(input.min_rent),
-    max_rent: normalizeAmount(input.max_rent),
-    fields: normalizeFields(input.fields),
+    month: normalizeMonth(source.month) || new Date().toISOString().slice(0, 7),
+    status: normalizeStatus(source.status),
+    block: normalizeBlock(source.block),
+    floor: normalizeFloor(source.floor),
+    unit_number: normalizeUnitNumber(source.unit_number),
+    unit_type: normalizeUnitType(source.unit_type),
+    tenant_name: cleanString(source.tenant_name),
+    phone: normalizePhone(source.phone),
+    category: normalizeCategory(source.category),
+    complaint_status: normalizeComplaintStatus(source.complaint_status),
+    days: normalizeDays(source.days),
+    min_rent: normalizeAmount(source.min_rent),
+    max_rent: normalizeAmount(source.max_rent),
+    fields: normalizeFields(source.fields),
   };
 }
 
 function normalizeToolInput(tool, rawInput = {}) {
-  const input = { ...rawInput };
+  const input = flattenToolInput(rawInput);
 
   switch (tool) {
     case 'rent_roll':
@@ -218,6 +227,7 @@ module.exports = {
   VALID_BLOCKS,
   VALID_FIELDS,
   buildFilters,
+  flattenToolInput,
   normalizeToolCall,
   normalizeToolInput,
   describeFilters,

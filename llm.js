@@ -1,7 +1,6 @@
 require('dotenv').config();
 const Anthropic = require('@anthropic-ai/sdk');
 const { routeByKeywords } = require('./bot/keywordRouter');
-const { normalizeToolCall } = require('./bot/toolParams');
 
 const MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5';
 const MAX_TOKENS = 256;
@@ -233,11 +232,10 @@ async function routeManagerMessage(message) {
   try {
     const start = Date.now();
     const route = await withTimeout(routeWithLLM(message), LLM_TIMEOUT_MS, 'LLM');
-    const normalized = normalizeToolCall(route.tool, route.input);
     console.log(
-      `LLM route: ${normalized.tool} (${Date.now() - start}ms) input=${JSON.stringify(normalized.input)}`
+      `LLM route: ${route.tool} (${Date.now() - start}ms) input=${JSON.stringify(route.input)}`
     );
-    return { tool: normalized.tool, input: normalized.input, fallback: false };
+    return { ...route, fallback: false };
   } catch (error) {
     console.error('LLM routing failed:', error.message);
     return { tool: 'help', input: {}, fallback: true };
