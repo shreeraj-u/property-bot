@@ -30,6 +30,61 @@ function splitMessage(text, maxLen = WHATSAPP_MAX) {
   return parts;
 }
 
+function formatMonthLabel(month) {
+  if (!month) return 'this month';
+  const [year, mon] = month.split('-').map(Number);
+  return new Date(year, mon - 1, 1).toLocaleDateString('en-SG', {
+    month: 'long',
+    year: 'numeric',
+  });
+}
+
+function sumPayments(payments) {
+  return (payments || []).reduce((total, payment) => total + Number(payment.amount_paid || 0), 0);
+}
+
+function formatRentSummary(payments, month, filters = {}, filterContext) {
+  const label = formatMonthLabel(month);
+  const ctx = filterContext ? `, ${filterContext}` : '';
+
+  if (!payments?.length) {
+    return `No rent data for ${label}${ctx}.`;
+  }
+
+  const status = filters.status || 'all';
+
+  if (status === 'paid') {
+    const total = sumPayments(payments);
+    return [
+      `Total rent collected (${label}${ctx}):`,
+      formatCurrency(total),
+      `From ${payments.length} tenant${payments.length === 1 ? '' : 's'}`,
+    ].join('\n');
+  }
+
+  if (status === 'pending' || status === 'overdue') {
+    const total = sumPayments(payments);
+    return [
+      `Total ${status} rent (${label}${ctx}):`,
+      formatCurrency(total),
+      `${payments.length} tenant${payments.length === 1 ? '' : 's'}`,
+    ].join('\n');
+  }
+
+  const paid = payments.filter((p) => p.status === 'paid');
+  const pending = payments.filter((p) => p.status === 'pending');
+  const overdue = payments.filter((p) => p.status === 'overdue');
+
+  return [
+    `Rent summary (${label}${ctx}):`,
+    '',
+    `Collected: ${formatCurrency(sumPayments(paid))} (${paid.length} paid)`,
+    `Outstanding (pending): ${formatCurrency(sumPayments(pending))} (${pending.length} tenants)`,
+    `Overdue: ${formatCurrency(sumPayments(overdue))} (${overdue.length} tenants)`,
+    `Total due this month: ${formatCurrency(sumPayments(payments))} (${payments.length} tenants)`,
+  ].join('\n');
+}
+
 function formatRentRoll(payments, month, filterContext) {
   const header = filterContext
     ? `Rent roll (${month || 'current month'}, ${filterContext}):`
@@ -358,6 +413,7 @@ function managerHelpMenu() {
     '',
     'Ask me anything, for example:',
     '- Who has not paid rent this month?',
+    '- How much rent was collected last month?',
     '- Has anyone in block B missed rent?',
     '- Show overdue payments on floor 5',
     '- Leases expiring in 60 days in block A',
@@ -378,6 +434,7 @@ module.exports = {
   formatDate,
   splitMessage,
   formatRentRoll,
+  formatRentSummary,
   formatExpiringLeases,
   formatTenantProfile,
   formatTenantByFields,

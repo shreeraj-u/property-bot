@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const {
   splitMessage,
   formatRentRoll,
+  formatRentSummary,
   formatMyRentStatus,
   formatExpiringLeases,
   tenantMainMenu,
@@ -14,6 +15,17 @@ describe('formatters', () => {
     const parts = splitMessage(text, 1500);
     assert.equal(parts.length, 2);
     assert.ok(parts[0].length <= 1500);
+  });
+
+  it('formats rent summary for paid totals', () => {
+    const payments = [
+      { amount_paid: 2500, status: 'paid' },
+      { amount_paid: 3000, status: 'paid' },
+    ];
+    const text = formatRentSummary(payments, '2026-05', { status: 'paid' });
+    assert.match(text, /Total rent collected/);
+    assert.match(text, /SGD 5,500/);
+    assert.match(text, /2 tenants/);
   });
 
   it('formats rent roll with summary', () => {

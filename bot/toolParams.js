@@ -46,6 +46,26 @@ function normalizeMonth(value) {
   return month;
 }
 
+function resolveMonth(source = {}) {
+  const explicit = normalizeMonth(source.month);
+  if (explicit) return explicit;
+
+  const relative = cleanString(source.relative_month)?.toLowerCase().replace(/[\s-]+/g, '_');
+  const date = new Date();
+  date.setDate(1);
+  date.setHours(12, 0, 0, 0);
+
+  if (relative === 'last_month' || relative === 'previous_month') {
+    date.setMonth(date.getMonth() - 1);
+  } else if (relative === 'next_month') {
+    date.setMonth(date.getMonth() + 1);
+  }
+
+  const year = date.getFullYear();
+  const mon = String(date.getMonth() + 1).padStart(2, '0');
+  return `${year}-${mon}`;
+}
+
 function normalizeStatus(value, allowed = VALID_STATUSES) {
   const status = cleanString(value)?.toLowerCase();
   if (!status) return 'all';
@@ -128,7 +148,8 @@ function flattenToolInput(input = {}) {
 function buildFilters(input = {}) {
   const source = flattenToolInput(input);
   return {
-    month: normalizeMonth(source.month) || new Date().toISOString().slice(0, 7),
+    month: resolveMonth(source),
+    relative_month: cleanString(source.relative_month)?.toLowerCase() || null,
     status: normalizeStatus(source.status),
     block: normalizeBlock(source.block),
     floor: normalizeFloor(source.floor),
@@ -150,6 +171,8 @@ function normalizeToolInput(tool, rawInput = {}) {
 
   switch (tool) {
     case 'rent_roll':
+      return { filters: buildFilters(input) };
+    case 'rent_summary':
       return { filters: buildFilters(input) };
     case 'expiring_leases':
       return { filters: buildFilters(input) };
@@ -235,4 +258,5 @@ module.exports = {
   normalizeUnitNumber,
   normalizeStatus,
   normalizeFields,
+  resolveMonth,
 };

@@ -75,6 +75,26 @@ describe('managerTools', () => {
     assert.doesNotMatch(reply, /Recent payments/);
   });
 
+  it('executes rent_summary tool', async () => {
+    const { executeManagerTool } = loadManagerFlows({
+      getRentStatus: async () => ({
+        data: [
+          { amount_paid: 2500, status: 'paid' },
+          { amount_paid: 3000, status: 'paid' },
+        ],
+        error: null,
+        month: '2026-05',
+      }),
+    });
+
+    const reply = await executeManagerTool('rent_summary', {
+      filters: { status: 'paid', month: '2026-05' },
+    });
+    assert.match(reply, /Total rent collected/);
+    assert.match(reply, /SGD 5,500/);
+    assert.doesNotMatch(reply, /^-/m);
+  });
+
   it('executes help tool', async () => {
     const { executeManagerTool } = loadManagerFlows({});
     const reply = await executeManagerTool('help', {});

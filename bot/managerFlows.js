@@ -11,6 +11,7 @@ const {
 } = require('../supabase');
 const {
   formatRentRoll,
+  formatRentSummary,
   formatExpiringLeases,
   formatTenantByFields,
   formatComplaints,
@@ -27,6 +28,12 @@ async function executeManagerTool(tool, input) {
       const { data, error, month } = await getRentStatus(filters);
       if (error) return formatDbError(error) || 'Could not fetch rent data.';
       return formatRentRoll(data, month, describeFilters(filters));
+    }
+    case 'rent_summary': {
+      const filters = input.filters || {};
+      const { data, error, month } = await getRentStatus(filters);
+      if (error) return formatDbError(error) || 'Could not fetch rent data.';
+      return formatRentSummary(data, month, filters, describeFilters(filters));
     }
     case 'expiring_leases': {
       const filters = input.filters || {};

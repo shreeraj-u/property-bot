@@ -7,6 +7,7 @@ const {
   normalizeFields,
   describeFilters,
   buildFilters,
+  resolveMonth,
 } = require('../bot/toolParams');
 
 describe('toolParams', () => {
@@ -54,5 +55,22 @@ describe('toolParams', () => {
     const second = normalizeToolCall(first.tool, first.input);
     assert.equal(second.input.filters.status, 'overdue');
     assert.equal(second.input.filters.block, 'C');
+  });
+
+  it('resolves relative months', () => {
+    const now = new Date();
+    const last = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const expected = `${last.getFullYear()}-${String(last.getMonth() + 1).padStart(2, '0')}`;
+    assert.equal(resolveMonth({ relative_month: 'last_month' }), expected);
+  });
+
+  it('routes aggregate questions to rent_summary shape', () => {
+    const call = normalizeToolCall('rent_summary', {
+      relative_month: 'last_month',
+      status: 'paid',
+    });
+    assert.equal(call.tool, 'rent_summary');
+    assert.equal(call.input.filters.status, 'paid');
+    assert.equal(call.input.filters.month, resolveMonth({ relative_month: 'last_month' }));
   });
 });
