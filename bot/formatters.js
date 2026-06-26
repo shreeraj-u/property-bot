@@ -30,17 +30,25 @@ function splitMessage(text, maxLen = WHATSAPP_MAX) {
   return parts;
 }
 
-function formatRentRoll(payments, month) {
+function formatRentRoll(payments, month, filterContext) {
+  const header = filterContext
+    ? `Rent roll (${month || 'current month'}, ${filterContext}):`
+    : `Rent roll (${month || 'current month'}):`;
+
   if (!payments?.length) {
-    return `No rent payments found for ${month || 'this month'}.`;
+    return filterContext
+      ? `No rent payments found for ${month || 'this month'} matching ${filterContext}.`
+      : `No rent payments found for ${month || 'this month'}.`;
   }
 
   const lines = payments.map((p) => {
     const name = p.tenants?.full_name || 'Unknown';
     const unit = p.tenants?.units?.unit_number || '?';
+    const block = p.tenants?.units?.block;
     const status = (p.status || 'unknown').toUpperCase();
     const paid = p.paid_date ? ` (paid ${formatDate(p.paid_date)})` : '';
-    return `- ${unit} ${name}: ${formatCurrency(p.amount_paid)} — ${status}${paid}`;
+    const blockTag = block ? ` [${block}]` : '';
+    return `- ${unit}${blockTag} ${name}: ${formatCurrency(p.amount_paid)} — ${status}${paid}`;
   });
 
   const summary = {
@@ -50,23 +58,120 @@ function formatRentRoll(payments, month) {
   };
 
   return [
-    `Rent roll (${month || 'current month'}):`,
+    header,
     `Paid: ${summary.paid} | Pending: ${summary.pending} | Overdue: ${summary.overdue}`,
     '',
     ...lines,
   ].join('\n');
 }
 
-function formatExpiringLeases(leases) {
-  if (!leases?.length) return 'No leases expiring in the requested period.';
+function formatExpiringLeases(leases, filterContext) {
+  if (!leases?.length) {
+    return filterContext
+      ? `No leases expiring in the requested period matching ${filterContext}.`
+      : 'No leases expiring in the requested period.';
+  }
 
   const lines = leases.map((l) => {
     const unit = l.unit_number || l.units?.unit_number || '?';
+    const block = l.units?.block;
     const name = l.full_name || l.tenants?.full_name || 'Unknown';
-    return `- ${unit} ${name}: expires ${formatDate(l.end_date || l.lease_end_date)} (${l.days_until_expiry} days)`;
+    const blockTag = block ? ` [${block}]` : '';
+    return `- ${unit}${blockTag} ${name}: expires ${formatDate(l.end_date || l.lease_end_date)} (${l.days_until_expiry} days)`;
   });
 
-  return ['Expiring leases:', '', ...lines].join('\n');
+  const header = filterContext ? `Expiring leases (${filterContext}):` : 'Expiring leases:';
+  return [header, '', ...lines].join('\n');
+}
+
+function formatTenantByFields(tenant, fields = ['profile'], extras = {}) {
+  if (!tenant) return 'Tenant not found.';
+
+  const fieldSet = new Set(fields || ['profile']);
+  if (fieldSet.has('profile') || fieldSet.has('all')) {
+    return formatTenantProfile(tenant);
+  }
+
+  const activeLease = (tenant.leases || []).find((l) => l.status === 'active');
+  const unit = tenant.units?.unit_number || '?';
+  const name = tenant.full_name;
+
+  if (fieldSet.has('lease_end')) {
+    if (!activeLease) return `No active lease found for ${name}.`;
+    return `${name}'s lease ends on ${formatDate(activeLease.end_date)} (Unit ${unit}).`;
+  }
+
+  if (fieldSet.has('lease_start')) {
+    if (!activeLease) return `No active lease found for ${name}.`;
+    return `${name}'s lease started on ${formatDate(activeLease.start_date)} (Unit ${unit}).`;
+  }
+
+  if (fieldSet.has('lease_dates')) {
+    if (!activeLease) return `No active lease found for ${name}.`;
+    return `${name}'s lease runs ${formatDate(activeLease.start_date)} – ${formatDate(activeLease.end_date)} (Unit ${unit}).`;
+  }
+
+  if (fieldSet.has('rent')) {
+    if (!activeLease) return `No active lease found for ${name}.`;
+    return `${name}'s monthly rent is ${formatCurrency(activeLease.monthly_rent)}/mo (Unit ${unit}).`;
+  }
+
+  if (fieldSet.has('deposit')) {
+    if (!activeLease) return `No active lease found for ${name}.`;
+    return `${name}'s deposit is ${formatCurrency(activeLease.deposit_amount)} (Unit ${unit}).`;
+  }
+
+  if (fieldSet.has('next_payment')) {
+    return formatNextRentPayment({ tenant, payment: extras.nextPayment });
+  }
+
+  if (fieldSet.has('current_rent')) {
+    return formatTenantMonthlyRent(tenant, extras.currentPayment, extras.month);
+  }
+
+  if (fieldSet.has('payments')) {
+    const payments = tenant.rent_payments || [];
+    if (!payments.length) return `No recent payments for ${name}.`;
+    const lines = [`Recent payments for ${name} (Unit ${unit}):`];
+    for (const p of payments) {
+      lines.push(`- ${formatDate(p.due_date)}: ${formatCurrency(p.amount_paid)} (${p.status})`);
+    }
+    return lines.join('\n');
+  }
+
+  const lines = [`${name} (Unit ${unit})`];
+
+  if (fieldSet.has('contact')) {
+    lines.push(`Phone: ${tenant.phone_number}`, `Email: ${tenant.email || 'N/A'}`);
+  }
+
+  if (fieldSet.has('unit')) {
+    const u = tenant.units || {};
+    lines.push(
+      `Type: ${u.unit_type || 'N/A'}`,
+      `Block: ${u.block || 'N/A'}`,
+      `Floor: ${u.floor ?? 'N/A'}`,
+      `Listed rent: ${formatCurrency(u.monthly_rent_price)}`
+    );
+  }
+
+  return lines.length > 1 ? lines.join('\n') : formatTenantProfile(tenant);
+}
+
+function formatVacantUnits(units, filterContext) {
+  if (!units?.length) {
+    return filterContext
+      ? `No vacant units matching ${filterContext}.`
+      : 'No vacant units at the moment.';
+  }
+
+  const lines = units.map((u) => {
+    const amenities = u.amenities ? ` — ${u.amenities}` : '';
+    return `- ${u.unit_number} [${u.block}] ${u.unit_type}, ${u.size_sqft || '?'} sqft: ${formatCurrency(u.monthly_rent_price)}/mo${amenities}`;
+  });
+
+  const header = filterContext ? `Vacant units (${filterContext}):` : 'Vacant units:';
+  return [header, '', ...lines].join('\n');
 }
 
 function formatTenantProfile(tenant) {
@@ -214,17 +319,24 @@ function formatLeaseInfo(lease, documentUrl) {
   return lines.join('\n');
 }
 
-function formatComplaints(complaints) {
-  if (!complaints?.length) return 'No open complaints.';
+function formatComplaints(complaints, filterContext) {
+  if (!complaints?.length) {
+    return filterContext
+      ? `No complaints matching ${filterContext}.`
+      : 'No open complaints.';
+  }
 
   const lines = complaints.map((c) => {
     const unit = c.units?.unit_number || '?';
+    const block = c.units?.block;
     const name = c.tenants?.full_name || 'Unknown';
     const desc = (c.description || '').slice(0, 80);
-    return `- [${c.status}] ${unit} ${name} (${c.category}): ${desc}`;
+    const blockTag = block ? ` [${block}]` : '';
+    return `- [${c.status}] ${unit}${blockTag} ${name} (${c.category}): ${desc}`;
   });
 
-  return ['Open complaints:', '', ...lines].join('\n');
+  const header = filterContext ? `Complaints (${filterContext}):` : 'Open complaints:';
+  return [header, '', ...lines].join('\n');
 }
 
 function tenantMainMenu(tenant) {
@@ -246,11 +358,15 @@ function managerHelpMenu() {
     '',
     'Ask me anything, for example:',
     '- Who has not paid rent this month?',
-    '- Show overdue payments',
-    '- Leases expiring in 60 days',
+    '- Has anyone in block B missed rent?',
+    '- Show overdue payments on floor 5',
+    '- Leases expiring in 60 days in block A',
+    '- When does Isabelle Koh\'s lease end?',
+    '- Next rent payment for David Lim',
     '- Look up tenant in unit A-05-12',
+    '- Any vacant 2BR units in block C?',
+    '- Open maintenance complaints in block B',
     '- Send lease for [tenant name]',
-    '- Any open complaints?',
     '',
     'Type help anytime for this menu.',
   ].join('\n');
@@ -264,11 +380,13 @@ module.exports = {
   formatRentRoll,
   formatExpiringLeases,
   formatTenantProfile,
+  formatTenantByFields,
   formatMyRentStatus,
   formatNextRentPayment,
   formatTenantMonthlyRent,
   formatLeaseInfo,
   formatComplaints,
+  formatVacantUnits,
   tenantMainMenu,
   managerHelpMenu,
 };

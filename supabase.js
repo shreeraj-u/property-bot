@@ -74,6 +74,82 @@ function monthBounds(month) {
   };
 }
 
+function parseUnitNumber(unitNumber) {
+  if (!unitNumber) return null;
+  const match = String(unitNumber).toUpperCase().match(/^([A-C])-(\d{2})-(\d)$/);
+  if (!match) return { unit_number: unitNumber };
+  return {
+    block: match[1],
+    floor: Number(match[2]),
+    unit_number: unitNumber.toUpperCase(),
+  };
+}
+
+function getUnitFromRecord(record) {
+  return record?.units || record?.tenants?.units || record;
+}
+
+function getUnitNumber(record) {
+  const unit = getUnitFromRecord(record);
+  return unit?.unit_number || record?.unit_number || null;
+}
+
+function matchesTenantName(name, filterName) {
+  if (!filterName) return true;
+  return (name || '').toLowerCase().includes(filterName.toLowerCase());
+}
+
+function matchesUnitFilters(record, filters = {}) {
+  const unit = getUnitFromRecord(record);
+  const unitNumber = getUnitNumber(record);
+  const parsed = parseUnitNumber(unitNumber);
+
+  if (filters.unit_number && unitNumber !== filters.unit_number) return false;
+
+  if (filters.block) {
+    const block = unit?.block || parsed?.block;
+    if (block !== filters.block) return false;
+  }
+
+  if (filters.floor != null) {
+    const floor = unit?.floor ?? parsed?.floor;
+    if (Number(floor) !== Number(filters.floor)) return false;
+  }
+
+  if (filters.unit_type && unit?.unit_type !== filters.unit_type) return false;
+
+  const rentAmount =
+    record?.amount_paid ??
+    record?.monthly_rent ??
+    record?.monthly_rent_price ??
+    unit?.monthly_rent_price;
+
+  if (filters.min_rent != null && Number(rentAmount) < filters.min_rent) return false;
+  if (filters.max_rent != null && Number(rentAmount) > filters.max_rent) return false;
+
+  return true;
+}
+
+function applyRecordFilters(records, filters = {}, nameAccessor) {
+  return (records || []).filter((record) => {
+    const name =
+      typeof nameAccessor === 'function'
+        ? nameAccessor(record)
+        : record?.tenants?.full_name || record?.full_name;
+
+    if (filters.tenant_name && !matchesTenantName(name, filters.tenant_name)) {
+      return false;
+    }
+
+    if (filters.phone) {
+      const phone = record?.tenants?.phone_number || record?.phone_number;
+      if (phone !== filters.phone) return false;
+    }
+
+    return matchesUnitFilters(record, filters);
+  });
+}
+
 async function identifySender(phoneNumber) {
   const isManager = phoneNumber === process.env.MANAGER_PHONE;
   if (isManager) {
@@ -102,7 +178,7 @@ async function findTenantByIdentifier(identifier) {
   if (!safe) return { data: null, error: new Error('Invalid identifier') };
 
   const select =
-    'id, full_name, phone_number, unit_id, units!tenants_unit_id_fkey(unit_number)';
+    'id, full_name, phone_number, email, unit_id, units!tenants_unit_id_fkey(unit_number, block, floor, unit_type, monthly_rent_price, status)';
 
   if (safe.startsWith('+')) {
     const { data, error } = await supabase
@@ -180,7 +256,9 @@ async function getTenantNextPaymentSummary(identifier) {
   return { data: { tenant, payment }, error: null };
 }
 
-async function getRentStatus(month, statusFilter) {
+async function getRentStatus(filters = {}) {
+  const month = filters.month || new Date().toISOString().slice(0, 7);
+  const statusFilter = filters.status || 'all';
   const { start, end } = monthBounds(month);
 
   let query = supabase
@@ -193,7 +271,7 @@ async function getRentStatus(month, statusFilter) {
       due_date,
       paid_date,
       status,
-      tenants(full_name, phone_number, units!tenants_unit_id_fkey(unit_number))
+      tenants(full_name, phone_number, units!tenants_unit_id_fkey(unit_number, block, floor, unit_type, monthly_rent_price))
     `)
     .gte('due_date', start)
     .lte('due_date', end)
@@ -204,10 +282,14 @@ async function getRentStatus(month, statusFilter) {
   }
 
   const { data, error } = await query;
-  return { data, error };
+  if (error) return { data: null, error, month };
+
+  const filtered = applyRecordFilters(data, filters);
+  return { data: filtered, error: null, month };
 }
 
-async function getExpiringLeases(daysAhead = 60) {
+async function getExpiringLeases(filters = {}) {
+  const daysAhead = filters.days || 60;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const future = new Date(today);
@@ -222,9 +304,11 @@ async function getExpiringLeases(daysAhead = 60) {
       start_date,
       end_date,
       monthly_rent,
+      deposit_amount,
       status,
+      renewal_offered,
       tenants(full_name, phone_number),
-      units!leases_unit_id_fkey(unit_number)
+      units!leases_unit_id_fkey(unit_number, block, floor, unit_type, monthly_rent_price)
     `)
     .eq('status', 'active')
     .gte('end_date', today.toISOString().slice(0, 10))
@@ -246,7 +330,8 @@ async function getExpiringLeases(daysAhead = 60) {
     };
   });
 
-  return { data: enriched, error: null };
+  const filtered = applyRecordFilters(enriched, filters);
+  return { data: filtered, error: null };
 }
 
 async function getTenantProfile(identifier) {
@@ -370,8 +455,13 @@ async function fileComplaint(tenantId, unitId, category, description) {
   return { data, error };
 }
 
-async function listOpenComplaints() {
-  const { data, error } = await supabase
+async function listOpenComplaints(filters = {}) {
+  const statuses =
+    filters.complaint_status && filters.complaint_status !== 'all'
+      ? [filters.complaint_status]
+      : ['open', 'in_progress'];
+
+  let query = supabase
     .from('complaints')
     .select(`
       id,
@@ -380,11 +470,43 @@ async function listOpenComplaints() {
       status,
       created_at,
       tenants(full_name, phone_number),
-      units!complaints_unit_id_fkey(unit_number)
+      units!complaints_unit_id_fkey(unit_number, block, floor, unit_type)
     `)
-    .in('status', ['open', 'in_progress'])
+    .in('status', statuses)
     .order('created_at', { ascending: false });
 
+  if (filters.category) {
+    query = query.eq('category', filters.category);
+  }
+
+  const { data, error } = await query;
+  if (error) return { data: null, error };
+
+  let filtered = applyRecordFilters(data, filters);
+
+  if (filters.days) {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - filters.days);
+    filtered = filtered.filter((item) => new Date(item.created_at) >= cutoff);
+  }
+
+  return { data: filtered, error: null };
+}
+
+async function listVacantUnits(filters = {}) {
+  let query = supabase
+    .from('units')
+    .select('unit_number, block, floor, unit_type, size_sqft, monthly_rent_price, status, amenities, notes')
+    .eq('status', 'vacant')
+    .order('unit_number');
+
+  if (filters.block) query = query.eq('block', filters.block);
+  if (filters.floor != null) query = query.eq('floor', filters.floor);
+  if (filters.unit_type) query = query.eq('unit_type', filters.unit_type);
+  if (filters.min_rent != null) query = query.gte('monthly_rent_price', filters.min_rent);
+  if (filters.max_rent != null) query = query.lte('monthly_rent_price', filters.max_rent);
+
+  const { data, error } = await query;
   return { data, error };
 }
 
@@ -495,6 +617,7 @@ module.exports = {
   getMyPaymentStatus,
   fileComplaint,
   listOpenComplaints,
+  listVacantUnits,
   getSession,
   saveSession,
   clearSession,
@@ -504,4 +627,6 @@ module.exports = {
   formatDbError,
   monthBounds,
   sanitizeFilterValue,
+  applyRecordFilters,
+  parseUnitNumber,
 };

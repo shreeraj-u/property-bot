@@ -3,21 +3,16 @@ const assert = require('node:assert/strict');
 const { routeByKeywords } = require('../bot/keywordRouter');
 
 describe('keywordRouter', () => {
-  it('routes next rent payment questions by tenant name', () => {
-    const route = routeByKeywords('When is the next rent payment for David Lim');
-    assert.equal(route.tool, 'tenant_next_payment');
-    assert.equal(route.input.identifier, 'David Lim');
+  it('routes help and menu to help tool', () => {
+    assert.equal(routeByKeywords('help').tool, 'help');
+    assert.equal(routeByKeywords('menu please').tool, 'help');
+    assert.equal(routeByKeywords('hi there').tool, 'help');
+    assert.equal(routeByKeywords('hello').tool, 'help');
   });
 
-  it('routes overdue rent questions', () => {
-    const route = routeByKeywords("Who hasn't paid rent this month?");
-    assert.equal(route.tool, 'rent_roll');
-    assert.equal(route.input.status, 'overdue');
-  });
-
-  it('routes paid rent question by tenant name', () => {
-    const route = routeByKeywords('Can you tell me if David Lim has paid his rent this month?');
-    assert.equal(route.tool, 'tenant_monthly_rent');
-    assert.equal(route.input.identifier, 'David Lim');
+  it('returns null for natural language so LLM can route', () => {
+    assert.equal(routeByKeywords('When is the next rent payment for David Lim'), null);
+    assert.equal(routeByKeywords("Who hasn't paid rent this month?"), null);
+    assert.equal(routeByKeywords('Has anyone in block b missed rent?'), null);
   });
 });

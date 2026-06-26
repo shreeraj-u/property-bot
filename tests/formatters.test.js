@@ -63,6 +63,20 @@ describe('formatters', () => {
     assert.match(text, /36 days/);
   });
 
+  it('formats tenant lease_end field only', () => {
+    const { formatTenantByFields } = require('../bot/formatters');
+    const text = formatTenantByFields(
+      {
+        full_name: 'Isabelle Koh',
+        units: { unit_number: 'A-03-2' },
+        leases: [{ status: 'active', end_date: '2026-12-31', start_date: '2025-01-01' }],
+      },
+      ['lease_end']
+    );
+    assert.match(text, /lease ends on/);
+    assert.doesNotMatch(text, /Recent payments/);
+  });
+
   it('builds tenant main menu', () => {
     const menu = tenantMainMenu({
       full_name: 'Aisha Rahman',

@@ -6,54 +6,58 @@ const {
   getTenantNextPaymentSummary,
   getLeaseDocument,
   listOpenComplaints,
+  listVacantUnits,
   formatDbError,
 } = require('../supabase');
 const {
   formatRentRoll,
   formatExpiringLeases,
-  formatTenantProfile,
-  formatNextRentPayment,
-  formatTenantMonthlyRent,
+  formatTenantByFields,
   formatComplaints,
+  formatVacantUnits,
   managerHelpMenu,
 } = require('./formatters');
+const { normalizeToolCall, describeFilters } = require('./toolParams');
 const { routeManagerMessage } = require('../llm');
 
 async function executeManagerTool(tool, input) {
   switch (tool) {
     case 'rent_roll': {
-      const month = input.month || new Date().toISOString().slice(0, 7);
-      const status = input.status || 'all';
-      const { data, error } = await getRentStatus(month, status);
+      const filters = input.filters || {};
+      const { data, error, month } = await getRentStatus(filters);
       if (error) return formatDbError(error) || 'Could not fetch rent data.';
-      return formatRentRoll(data, month);
+      return formatRentRoll(data, month, describeFilters(filters));
     }
     case 'expiring_leases': {
-      const days = input.days || 60;
-      const { data, error } = await getExpiringLeases(days);
+      const filters = input.filters || {};
+      const { data, error } = await getExpiringLeases(filters);
       if (error) return formatDbError(error) || 'Could not fetch leases.';
-      return formatExpiringLeases(data);
+      return formatExpiringLeases(data, describeFilters(filters));
     }
     case 'tenant_lookup': {
-      if (!input.identifier) return 'Please provide a unit number or tenant name.';
-      const { data, error } = await getTenantProfile(input.identifier);
+      const { identifier, filters = {} } = input;
+      if (!identifier) return 'Please provide a unit number or tenant name.';
+
+      const { data, error } = await getTenantProfile(identifier);
       if (error) return formatDbError(error) || 'Lookup failed.';
       if (!data) return 'Tenant not found.';
-      return formatTenantProfile(data);
-    }
-    case 'tenant_next_payment': {
-      if (!input.identifier) return 'Please provide a tenant name or unit number.';
-      const { data, error } = await getTenantNextPaymentSummary(input.identifier);
-      if (error) return formatDbError(error) || 'Lookup failed.';
-      return formatNextRentPayment(data);
-    }
-    case 'tenant_monthly_rent': {
-      if (!input.identifier) return 'Please provide a tenant name or unit number.';
-      const month = input.month || new Date().toISOString().slice(0, 7);
-      const { data, error } = await getTenantMonthlyPayment(input.identifier, month);
-      if (error) return formatDbError(error) || 'Lookup failed.';
-      if (!data?.tenant) return 'Tenant not found.';
-      return formatTenantMonthlyRent(data.tenant, data.payment, month);
+
+      const fields = filters.fields || ['profile'];
+      const extras = { month: filters.month };
+
+      if (fields.includes('next_payment')) {
+        const next = await getTenantNextPaymentSummary(identifier);
+        if (next.error) return formatDbError(next.error) || 'Lookup failed.';
+        extras.nextPayment = next.data?.payment;
+      }
+
+      if (fields.includes('current_rent')) {
+        const monthly = await getTenantMonthlyPayment(identifier, filters.month);
+        if (monthly.error) return formatDbError(monthly.error) || 'Lookup failed.';
+        extras.currentPayment = monthly.data?.payment;
+      }
+
+      return formatTenantByFields(data, fields, extras);
     }
     case 'lease_document': {
       if (!input.identifier) return 'Please provide a unit number or tenant name.';
@@ -67,9 +71,16 @@ async function executeManagerTool(tool, input) {
       return `Lease document for ${tenantName || input.identifier}:\n${url}`;
     }
     case 'open_complaints': {
-      const { data, error } = await listOpenComplaints();
+      const filters = input.filters || {};
+      const { data, error } = await listOpenComplaints(filters);
       if (error) return formatDbError(error) || 'Could not fetch complaints.';
-      return formatComplaints(data);
+      return formatComplaints(data, describeFilters(filters));
+    }
+    case 'vacant_units': {
+      const filters = input.filters || {};
+      const { data, error } = await listVacantUnits(filters);
+      if (error) return formatDbError(error) || 'Could not fetch vacant units.';
+      return formatVacantUnits(data, describeFilters(filters));
     }
     case 'help':
     default:
@@ -79,7 +90,14 @@ async function executeManagerTool(tool, input) {
 
 async function handleManagerMessage(message) {
   const { tool, input, fallback } = await routeManagerMessage(message);
-  const reply = await executeManagerTool(tool, input);
+  const normalized = normalizeToolCall(tool, input);
+
+  console.log(
+    `Manager route: tool=${normalized.tool} input=${JSON.stringify(normalized.input)}` +
+      (fallback ? ' (fallback)' : '')
+  );
+
+  const reply = await executeManagerTool(normalized.tool, normalized.input);
 
   if (fallback) {
     return `${reply}\n\n(LLM routing unavailable — showing help menu.)`;
