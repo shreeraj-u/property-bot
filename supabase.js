@@ -1,6 +1,6 @@
-// supabase.js
 require('dotenv').config();
 const { createClient } = require('@supabase/supabase-js');
+const twilio = require('twilio');
 
 const supabaseOptions = {};
 if (typeof globalThis.WebSocket === 'undefined') {
@@ -13,7 +13,28 @@ const supabase = createClient(
   supabaseOptions
 );
 
-// Identify who is messaging by their phone number
+let twilioClient;
+function getTwilioClient() {
+  if (!twilioClient) {
+    twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+  }
+  return twilioClient;
+}
+
+function sanitizeFilterValue(value) {
+  return String(value || '').replace(/[%_,().]/g, '').trim();
+}
+
+function monthBounds(month) {
+  const targetMonth = month || new Date().toISOString().slice(0, 7);
+  const [year, mon] = targetMonth.split('-').map(Number);
+  const lastDay = new Date(year, mon, 0).getDate();
+  return {
+    start: `${targetMonth}-01`,
+    end: `${targetMonth}-${String(lastDay).padStart(2, '0')}`,
+  };
+}
+
 async function identifySender(phoneNumber) {
   const { data: tenant } = await supabase
     .from('tenants')
@@ -30,12 +51,24 @@ async function identifySender(phoneNumber) {
   return { tenant, isManager };
 }
 
-// ── Manager queries ──────────────────────────────────────
-
 async function getRentStatus(month, statusFilter) {
+  const { start, end } = monthBounds(month);
+
   let query = supabase
-    .from('current_month_payments') // uses the view you created
-    .select('*');
+    .from('rent_payments')
+    .select(`
+      id,
+      tenant_id,
+      lease_id,
+      amount_paid,
+      due_date,
+      paid_date,
+      status,
+      tenants(full_name, phone_number, units!tenants_unit_id_fkey(unit_number))
+    `)
+    .gte('due_date', start)
+    .lte('due_date', end)
+    .order('due_date');
 
   if (statusFilter && statusFilter !== 'all') {
     query = query.eq('status', statusFilter);
@@ -46,65 +79,155 @@ async function getRentStatus(month, statusFilter) {
 }
 
 async function getExpiringLeases(daysAhead = 60) {
-  const { data, error } = await supabase
-    .from('unit_overview')
-    .select('*')
-    .lte('days_until_expiry', daysAhead)
-    .gte('days_until_expiry', 0)
-    .order('days_until_expiry');
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const future = new Date(today);
+  future.setDate(future.getDate() + daysAhead);
 
-  return { data, error };
-}
-
-async function getTenantProfile(identifier) {
-  const { data, error } = await supabase
-    .from('tenants')
-    .select(`
-      *,
-      units!tenants_unit_id_fkey(*),
-      leases(*),
-      rent_payments(*)
-    `)
-    .or(`full_name.ilike.%${identifier}%,phone_number.eq.${identifier}`)
-    .single();
-
-  return { data, error };
-}
-
-async function getLeaseDocument(tenantNameOrUnit) {
   const { data, error } = await supabase
     .from('leases')
     .select(`
-      document_path,
-      tenants(full_name),
-      units(unit_number)
+      id,
+      tenant_id,
+      unit_id,
+      start_date,
+      end_date,
+      monthly_rent,
+      status,
+      tenants(full_name, phone_number),
+      units!leases_unit_id_fkey(unit_number)
     `)
     .eq('status', 'active')
-    .or(`units.unit_number.eq.${tenantNameOrUnit},tenants.full_name.ilike.%${tenantNameOrUnit}%`)
-    .single();
+    .gte('end_date', today.toISOString().slice(0, 10))
+    .lte('end_date', future.toISOString().slice(0, 10))
+    .order('end_date');
 
-  if (error || !data?.document_path) return { url: null };
+  if (error) return { data: null, error };
 
-  // Generate a signed URL valid for 1 hour
-  const { data: signedUrl } = await supabase.storage
+  const enriched = (data || []).map((lease) => {
+    const endDate = new Date(lease.end_date);
+    endDate.setHours(0, 0, 0, 0);
+    const daysUntilExpiry = Math.ceil((endDate - today) / (1000 * 60 * 60 * 24));
+    return {
+      ...lease,
+      days_until_expiry: daysUntilExpiry,
+      full_name: lease.tenants?.full_name,
+      unit_number: lease.units?.unit_number,
+      lease_end_date: lease.end_date,
+    };
+  });
+
+  return { data: enriched, error: null };
+}
+
+async function getTenantProfile(identifier) {
+  const safe = sanitizeFilterValue(identifier);
+  if (!safe) return { data: null, error: new Error('Invalid identifier') };
+
+  if (safe.startsWith('+')) {
+    const { data, error } = await supabase
+      .from('tenants')
+      .select(`*, units!tenants_unit_id_fkey(*), leases(*), rent_payments(*)`)
+      .eq('phone_number', safe)
+      .maybeSingle();
+    return { data, error };
+  }
+
+  const { data: unit } = await supabase
+    .from('units')
+    .select('id')
+    .eq('unit_number', safe)
+    .maybeSingle();
+
+  if (unit) {
+    const { data, error } = await supabase
+      .from('tenants')
+      .select(`*, units!tenants_unit_id_fkey(*), leases(*), rent_payments(*)`)
+      .eq('unit_id', unit.id)
+      .maybeSingle();
+    return { data, error };
+  }
+
+  const { data: matches, error } = await supabase
+    .from('tenants')
+    .select(`*, units!tenants_unit_id_fkey(*), leases(*), rent_payments(*)`)
+    .ilike('full_name', `%${safe}%`)
+    .limit(1);
+
+  return { data: matches?.[0] || null, error };
+}
+
+async function getLeaseDocument(tenantNameOrUnit) {
+  const safe = sanitizeFilterValue(tenantNameOrUnit);
+  if (!safe) return { url: null, error: new Error('Invalid identifier') };
+
+  const { data: byUnit } = await supabase
+    .from('units')
+    .select('id, unit_number')
+    .eq('unit_number', safe)
+    .maybeSingle();
+
+  let leaseQuery = supabase
+    .from('leases')
+    .select(`
+      document_path,
+      tenant_id,
+      tenants(full_name),
+      units!leases_unit_id_fkey(unit_number)
+    `)
+    .eq('status', 'active');
+
+  if (byUnit) {
+    leaseQuery = leaseQuery.eq('unit_id', byUnit.id);
+  } else {
+    const { data: tenants } = await supabase
+      .from('tenants')
+      .select('id, full_name')
+      .ilike('full_name', `%${safe}%`)
+      .limit(1);
+
+    if (!tenants?.length) return { url: null, tenantName: null };
+    leaseQuery = leaseQuery.eq('tenant_id', tenants[0].id);
+  }
+
+  const { data, error } = await leaseQuery.maybeSingle();
+  if (error || !data?.document_path) {
+    return { url: null, tenantName: data?.tenants?.full_name || null, error };
+  }
+
+  const { data: signedUrl, error: signError } = await supabase.storage
     .from('lease-agreements')
     .createSignedUrl(data.document_path, 3600);
+
+  if (signError) {
+    return { url: null, tenantName: data.tenants?.full_name, error: signError };
+  }
 
   return { url: signedUrl?.signedUrl, tenantName: data.tenants?.full_name };
 }
 
-// ── Tenant queries ───────────────────────────────────────
+async function getActiveLease(tenantId) {
+  const { data, error } = await supabase
+    .from('leases')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .eq('status', 'active')
+    .order('end_date', { ascending: false })
+    .maybeSingle();
+
+  return { data, error };
+}
 
 async function getMyPaymentStatus(tenantId, month) {
-  const targetMonth = month || new Date().toISOString().slice(0, 7); // 'YYYY-MM'
+  const { start, end } = monthBounds(month);
 
   const { data, error } = await supabase
     .from('rent_payments')
     .select('*')
     .eq('tenant_id', tenantId)
-    .gte('due_date', `${targetMonth}-01`)
-    .lte('due_date', `${targetMonth}-31`)
-    .single();
+    .gte('due_date', start)
+    .lte('due_date', end)
+    .maybeSingle();
 
   return { data, error };
 }
@@ -118,6 +241,7 @@ async function fileComplaint(tenantId, unitId, category, description) {
       category,
       description,
       source: 'whatsapp',
+      status: 'open',
     })
     .select()
     .single();
@@ -125,35 +249,98 @@ async function fileComplaint(tenantId, unitId, category, description) {
   return { data, error };
 }
 
-// ── Session management ───────────────────────────────────
+async function listOpenComplaints() {
+  const { data, error } = await supabase
+    .from('complaints')
+    .select(`
+      id,
+      category,
+      description,
+      status,
+      created_at,
+      tenants(full_name, phone_number),
+      units!complaints_unit_id_fkey(unit_number)
+    `)
+    .in('status', ['open', 'in_progress'])
+    .order('created_at', { ascending: false });
+
+  return { data, error };
+}
 
 async function getSession(phoneNumber) {
   const { data } = await supabase
     .from('whatsapp_sessions')
     .select('*')
     .eq('phone_number', phoneNumber)
-    .single();
+    .maybeSingle();
 
   return data;
 }
 
 async function saveSession(phoneNumber, flow, sessionData) {
-  await supabase.from('whatsapp_sessions').upsert({
-    phone_number: phoneNumber,
-    current_flow: flow,
-    session_data: sessionData,
-    last_active: new Date().toISOString(),
-  });
+  const { error } = await supabase.from('whatsapp_sessions').upsert(
+    {
+      phone_number: phoneNumber,
+      current_flow: flow,
+      session_data: sessionData,
+      last_active: new Date().toISOString(),
+    },
+    { onConflict: 'phone_number' }
+  );
+
+  return { error };
+}
+
+async function clearSession(phoneNumber) {
+  const { error } = await supabase
+    .from('whatsapp_sessions')
+    .delete()
+    .eq('phone_number', phoneNumber);
+
+  return { error };
+}
+
+async function notifyManager(message) {
+  const from = process.env.TWILIO_WHATSAPP_FROM;
+  const managerPhone = process.env.MANAGER_PHONE;
+
+  if (!from || !managerPhone) {
+    console.warn('notifyManager skipped: TWILIO_WHATSAPP_FROM or MANAGER_PHONE not set');
+    return { error: new Error('Missing Twilio WhatsApp configuration') };
+  }
+
+  const to = managerPhone.startsWith('whatsapp:')
+    ? managerPhone
+    : `whatsapp:${managerPhone}`;
+
+  try {
+    await getTwilioClient().messages.create({
+      from,
+      to,
+      body: message,
+    });
+    return { error: null };
+  } catch (error) {
+    console.error('notifyManager failed:', error.message);
+    return { error };
+  }
 }
 
 module.exports = {
+  supabase,
   identifySender,
   getRentStatus,
   getExpiringLeases,
   getTenantProfile,
   getLeaseDocument,
+  getActiveLease,
   getMyPaymentStatus,
   fileComplaint,
+  listOpenComplaints,
   getSession,
   saveSession,
+  clearSession,
+  notifyManager,
+  monthBounds,
+  sanitizeFilterValue,
 };

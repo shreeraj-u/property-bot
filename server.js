@@ -1,40 +1,73 @@
 require('dotenv').config();
 const express = require('express');
 const twilio = require('twilio');
-const { identifySender } = require('./supabase');
+const { handleIncomingMessage, handleFirstMessage } = require('./bot/handler');
 
 const app = express();
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
-app.post('/webhook', async (req, res) => {
-  let from = (req.body.From?.replace('whatsapp:', '') || req.body.From || '').trim();
-  if (from && !from.startsWith('+')) {
-    from = `+${from}`;
+function normalizePhone(from) {
+  let phone = (from?.replace('whatsapp:', '') || from || '').trim();
+  if (phone && !phone.startsWith('+')) {
+    phone = `+${phone}`;
   }
-  const body = req.body.Body;
+  return phone;
+}
 
-  console.log(`📩 Message from ${from}: ${body}`);
+function validateTwilioRequest(req, res, next) {
+  if (process.env.NODE_ENV === 'test' || process.env.SKIP_TWILIO_VALIDATION === '1') {
+    return next();
+  }
+
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  if (!authToken) {
+    return next();
+  }
+
+  const signature = req.headers['x-twilio-signature'];
+  const url =
+    process.env.WEBHOOK_URL ||
+    `${req.protocol}://${req.get('host')}${req.originalUrl}`;
+
+  const valid = twilio.validateRequest(
+    authToken,
+    signature,
+    url,
+    req.body || {}
+  );
+
+  if (!valid) {
+    return res.status(403).send('Invalid Twilio signature');
+  }
+
+  return next();
+}
+
+app.post('/webhook', validateTwilioRequest, async (req, res) => {
+  const from = normalizePhone(req.body.From);
+  const body = req.body.Body || '';
+
+  console.log(`Message from ${from}: ${body}`);
 
   const twiml = new twilio.twiml.MessagingResponse();
 
   try {
-    const { tenant, isManager } = await identifySender(from);
+    const trimmed = body.trim();
+    const isGreeting =
+      !trimmed ||
+      ['hi', 'hello', 'hey', 'start', 'menu'].includes(trimmed.toLowerCase());
 
-    let reply;
+    const messages = isGreeting
+      ? await handleFirstMessage(from)
+      : await handleIncomingMessage(from, body);
 
-    if (isManager) {
-      reply = `👋 Welcome back, Manager. What would you like to know?`;
-    } else if (tenant) {
-      reply = `👋 Hi ${tenant.full_name}, Unit ${tenant.units?.unit_number}. How can I help you today?\n\n1. Check my rent status\n2. View lease info\n3. File a complaint`;
-    } else {
-      reply = `Sorry, your number isn't registered in our system. Please contact your property manager.`;
+    for (const msg of messages) {
+      twiml.message(msg);
     }
-
-    twiml.message(reply);
   } catch (err) {
-    console.error('Error:', err);
-    twiml.message('Something went wrong. Please try again.');
+    console.error('Webhook error:', err);
+    twiml.message('Something went wrong. Please try again or type menu.');
   }
 
   res.type('text/xml').send(twiml.toString());
@@ -42,6 +75,10 @@ app.post('/webhook', async (req, res) => {
 
 app.get('/', (req, res) => res.send('Property bot is running'));
 
-app.listen(process.env.PORT || 3000, () => {
-  console.log(`🚀 Server running on port ${process.env.PORT || 3000}`);
-});
+if (require.main === module) {
+  app.listen(process.env.PORT || 3000, () => {
+    console.log(`Server running on port ${process.env.PORT || 3000}`);
+  });
+}
+
+module.exports = app;
