@@ -1,7 +1,7 @@
 require('dotenv').config();
 const Anthropic = require('@anthropic-ai/sdk');
 
-const MODEL = 'claude-3-5-haiku-latest';
+const MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5';
 const MAX_TOKENS = 256;
 
 const TOOLS = [
