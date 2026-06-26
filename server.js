@@ -4,6 +4,7 @@ const twilio = require('twilio');
 const { handleIncomingMessage, handleFirstMessage } = require('./bot/handler');
 
 const app = express();
+app.set('trust proxy', true);
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
