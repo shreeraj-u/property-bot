@@ -2,6 +2,8 @@ const {
   getRentStatus,
   getExpiringLeases,
   getTenantProfile,
+  getTenantMonthlyPayment,
+  getTenantNextPaymentSummary,
   getLeaseDocument,
   listOpenComplaints,
 } = require('../supabase');
@@ -10,9 +12,9 @@ const {
   formatExpiringLeases,
   formatTenantProfile,
   formatNextRentPayment,
+  formatTenantMonthlyRent,
   formatComplaints,
   managerHelpMenu,
-  splitMessage,
 } = require('./formatters');
 const { routeManagerMessage } = require('../llm');
 
@@ -40,9 +42,17 @@ async function executeManagerTool(tool, input) {
     }
     case 'tenant_next_payment': {
       if (!input.identifier) return 'Please provide a tenant name or unit number.';
-      const { data, error } = await getTenantProfile(input.identifier);
+      const { data, error } = await getTenantNextPaymentSummary(input.identifier);
       if (error) return `Lookup failed: ${error.message}`;
       return formatNextRentPayment(data);
+    }
+    case 'tenant_monthly_rent': {
+      if (!input.identifier) return 'Please provide a tenant name or unit number.';
+      const month = input.month || new Date().toISOString().slice(0, 7);
+      const { data, error } = await getTenantMonthlyPayment(input.identifier, month);
+      if (error) return `Lookup failed: ${error.message}`;
+      if (!data?.tenant) return 'Tenant not found.';
+      return formatTenantMonthlyRent(data.tenant, data.payment, month);
     }
     case 'lease_document': {
       if (!input.identifier) return 'Please provide a unit number or tenant name.';

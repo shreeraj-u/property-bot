@@ -1,14 +1,13 @@
-const { identifySender } = require('../supabase');
+const { identifySender, isManagerPhone } = require('../supabase');
 const { tenantMainMenu, managerHelpMenu, splitMessage } = require('./formatters');
-const { loadSession, updateSession, resetSession } = require('./session');
+const { updateSession, resetSession } = require('./session');
 const { handleTenantMessage, isGlobalCommand } = require('./tenantFlows');
 const { handleManagerMessage } = require('./managerFlows');
 
 async function handleIncomingMessage(phoneNumber, body) {
-  const { tenant, isManager } = await identifySender(phoneNumber);
   const text = (body || '').trim();
 
-  if (isManager) {
+  if (isManagerPhone(phoneNumber)) {
     if (isGlobalCommand(text) && ['menu', 'help', 'start'].includes(text.toLowerCase())) {
       return splitMessage(managerHelpMenu());
     }
@@ -21,6 +20,8 @@ async function handleIncomingMessage(phoneNumber, body) {
     return splitMessage(reply);
   }
 
+  const { tenant } = await identifySender(phoneNumber);
+
   if (tenant) {
     const reply = await handleTenantMessage(tenant, phoneNumber, body);
     return splitMessage(reply);
@@ -32,13 +33,11 @@ async function handleIncomingMessage(phoneNumber, body) {
 }
 
 async function handleFirstMessage(phoneNumber) {
-  const { tenant, isManager } = await identifySender(phoneNumber);
-
-  if (isManager) {
-    return splitMessage(
-      `Welcome back, Manager.\n\n${managerHelpMenu()}`
-    );
+  if (isManagerPhone(phoneNumber)) {
+    return splitMessage(`Welcome back, Manager.\n\n${managerHelpMenu()}`);
   }
+
+  const { tenant } = await identifySender(phoneNumber);
 
   if (tenant) {
     await updateSession(phoneNumber, 'main_menu', {});

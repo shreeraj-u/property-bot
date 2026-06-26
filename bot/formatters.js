@@ -124,22 +124,13 @@ function formatMyRentStatus(payment, month) {
   return lines.join('\n');
 }
 
-function formatNextRentPayment(tenant) {
+function formatNextRentPayment(data) {
+  const tenant = data?.tenant || data;
+  const payment = data?.payment || pickNextPayment(data?.rent_payments);
+
   if (!tenant) return 'Tenant not found.';
 
   const unit = tenant.units?.unit_number || '?';
-  const payments = (tenant.rent_payments || []).sort(
-    (a, b) => new Date(a.due_date) - new Date(b.due_date)
-  );
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  const unpaid = payments.filter((p) => p.status !== 'paid');
-  const nextUnpaid = unpaid.find((p) => new Date(p.due_date) >= today) || unpaid[0];
-  const nextAny = payments.find((p) => new Date(p.due_date) >= today);
-
-  const payment = nextUnpaid || nextAny;
 
   if (!payment) {
     return `No upcoming rent payments found for ${tenant.full_name} (Unit ${unit}).`;
@@ -157,6 +148,49 @@ function formatNextRentPayment(tenant) {
   }
 
   return lines.join('\n');
+}
+
+function pickNextPayment(payments) {
+  if (!payments?.length) return null;
+
+  const sorted = [...payments].sort(
+    (a, b) => new Date(a.due_date) - new Date(b.due_date)
+  );
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const unpaid = sorted.filter((p) => p.status !== 'paid');
+  return (
+    unpaid.find((p) => new Date(p.due_date) >= today) ||
+    unpaid[0] ||
+    sorted.find((p) => new Date(p.due_date) >= today)
+  );
+}
+
+function formatTenantMonthlyRent(tenant, payment, month) {
+  if (!tenant) return 'Tenant not found.';
+
+  const unit = tenant.units?.unit_number || '?';
+  const label = month || new Date().toISOString().slice(0, 7);
+
+  if (!payment) {
+    return `${tenant.full_name} (Unit ${unit}) has no rent record for ${label}.`;
+  }
+
+  if (payment.status === 'paid') {
+    return [
+      `${tenant.full_name} (Unit ${unit}) has PAID rent for ${label}.`,
+      `Amount: ${formatCurrency(payment.amount_paid)}`,
+      `Paid on: ${formatDate(payment.paid_date)}`,
+    ].join('\n');
+  }
+
+  return [
+    `${tenant.full_name} (Unit ${unit}) has NOT paid rent for ${label}.`,
+    `Amount due: ${formatCurrency(payment.amount_paid)}`,
+    `Due: ${formatDate(payment.due_date)}`,
+    `Status: ${(payment.status || 'unknown').toUpperCase()}`,
+  ].join('\n');
 }
 
 function formatLeaseInfo(lease, documentUrl) {
@@ -232,6 +266,7 @@ module.exports = {
   formatTenantProfile,
   formatMyRentStatus,
   formatNextRentPayment,
+  formatTenantMonthlyRent,
   formatLeaseInfo,
   formatComplaints,
   tenantMainMenu,

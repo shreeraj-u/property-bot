@@ -45,7 +45,7 @@ function validateTwilioRequest(req, res, next) {
   return next();
 }
 
-const TWILIO_TIMEOUT_MS = Number(process.env.WEBHOOK_TIMEOUT_MS || 12000);
+const TWILIO_TIMEOUT_MS = Number(process.env.WEBHOOK_TIMEOUT_MS || 14000);
 
 function withWebhookTimeout(promise) {
   return Promise.race([

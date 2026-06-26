@@ -36,6 +36,11 @@ function monthBounds(month) {
 }
 
 async function identifySender(phoneNumber) {
+  const isManager = phoneNumber === process.env.MANAGER_PHONE;
+  if (isManager) {
+    return { tenant: null, isManager: true };
+  }
+
   const { data: tenant } = await supabase
     .from('tenants')
     .select(`
@@ -46,9 +51,94 @@ async function identifySender(phoneNumber) {
     .eq('phone_number', phoneNumber)
     .maybeSingle();
 
-  const isManager = phoneNumber === process.env.MANAGER_PHONE;
+  return { tenant, isManager: false };
+}
 
-  return { tenant, isManager };
+function isManagerPhone(phoneNumber) {
+  return phoneNumber === process.env.MANAGER_PHONE;
+}
+
+async function findTenantByIdentifier(identifier) {
+  const safe = sanitizeFilterValue(identifier);
+  if (!safe) return { data: null, error: new Error('Invalid identifier') };
+
+  const select =
+    'id, full_name, phone_number, unit_id, units!tenants_unit_id_fkey(unit_number)';
+
+  if (safe.startsWith('+')) {
+    const { data, error } = await supabase
+      .from('tenants')
+      .select(select)
+      .eq('phone_number', safe)
+      .maybeSingle();
+    return { data, error };
+  }
+
+  const { data: unit } = await supabase
+    .from('units')
+    .select('id')
+    .eq('unit_number', safe)
+    .maybeSingle();
+
+  if (unit) {
+    const { data, error } = await supabase
+      .from('tenants')
+      .select(select)
+      .eq('unit_id', unit.id)
+      .maybeSingle();
+    return { data, error };
+  }
+
+  const { data: matches, error } = await supabase
+    .from('tenants')
+    .select(select)
+    .ilike('full_name', `%${safe}%`)
+    .limit(1);
+
+  return { data: matches?.[0] || null, error };
+}
+
+async function getTenantMonthlyPayment(identifier, month) {
+  const { data: tenant, error } = await findTenantByIdentifier(identifier);
+  if (error) return { data: null, error };
+  if (!tenant) return { data: null, error: new Error('Tenant not found') };
+
+  const { start, end } = monthBounds(month);
+  const { data: payment, error: payError } = await supabase
+    .from('rent_payments')
+    .select('amount_paid, due_date, paid_date, status')
+    .eq('tenant_id', tenant.id)
+    .gte('due_date', start)
+    .lte('due_date', end)
+    .maybeSingle();
+
+  return { data: { tenant, payment }, error: payError };
+}
+
+async function getTenantNextPaymentSummary(identifier) {
+  const { data: tenant, error } = await findTenantByIdentifier(identifier);
+  if (error) return { data: null, error };
+  if (!tenant) return { data: null, error: new Error('Tenant not found') };
+
+  const { data: payments, error: payError } = await supabase
+    .from('rent_payments')
+    .select('amount_paid, due_date, paid_date, status')
+    .eq('tenant_id', tenant.id)
+    .order('due_date', { ascending: true })
+    .limit(6);
+
+  if (payError) return { data: null, error: payError };
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const unpaid = (payments || []).filter((p) => p.status !== 'paid');
+  const payment =
+    unpaid.find((p) => new Date(p.due_date) >= today) ||
+    unpaid[0] ||
+    (payments || []).find((p) => new Date(p.due_date) >= today);
+
+  return { data: { tenant, payment }, error: null };
 }
 
 async function getRentStatus(month, statusFilter) {
@@ -121,40 +211,32 @@ async function getExpiringLeases(daysAhead = 60) {
 }
 
 async function getTenantProfile(identifier) {
-  const safe = sanitizeFilterValue(identifier);
-  if (!safe) return { data: null, error: new Error('Invalid identifier') };
+  const { data: tenant, error } = await findTenantByIdentifier(identifier);
+  if (error || !tenant) return { data: tenant, error };
 
-  if (safe.startsWith('+')) {
-    const { data, error } = await supabase
-      .from('tenants')
-      .select(`*, units!tenants_unit_id_fkey(*), leases(*), rent_payments(*)`)
-      .eq('phone_number', safe)
-      .maybeSingle();
-    return { data, error };
-  }
+  const [{ data: leases }, { data: payments }] = await Promise.all([
+    supabase
+      .from('leases')
+      .select('id, start_date, end_date, monthly_rent, deposit_amount, status, renewal_offered')
+      .eq('tenant_id', tenant.id)
+      .order('end_date', { ascending: false })
+      .limit(2),
+    supabase
+      .from('rent_payments')
+      .select('amount_paid, due_date, paid_date, status')
+      .eq('tenant_id', tenant.id)
+      .order('due_date', { ascending: false })
+      .limit(3),
+  ]);
 
-  const { data: unit } = await supabase
-    .from('units')
-    .select('id')
-    .eq('unit_number', safe)
-    .maybeSingle();
-
-  if (unit) {
-    const { data, error } = await supabase
-      .from('tenants')
-      .select(`*, units!tenants_unit_id_fkey(*), leases(*), rent_payments(*)`)
-      .eq('unit_id', unit.id)
-      .maybeSingle();
-    return { data, error };
-  }
-
-  const { data: matches, error } = await supabase
-    .from('tenants')
-    .select(`*, units!tenants_unit_id_fkey(*), leases(*), rent_payments(*)`)
-    .ilike('full_name', `%${safe}%`)
-    .limit(1);
-
-  return { data: matches?.[0] || null, error };
+  return {
+    data: {
+      ...tenant,
+      leases: leases || [],
+      rent_payments: payments || [],
+    },
+    error: null,
+  };
 }
 
 async function getLeaseDocument(tenantNameOrUnit) {
@@ -329,6 +411,10 @@ async function notifyManager(message) {
 module.exports = {
   supabase,
   identifySender,
+  isManagerPhone,
+  findTenantByIdentifier,
+  getTenantMonthlyPayment,
+  getTenantNextPaymentSummary,
   getRentStatus,
   getExpiringLeases,
   getTenantProfile,

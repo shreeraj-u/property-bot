@@ -15,8 +15,9 @@ describe('keywordRouter', () => {
     assert.equal(route.input.status, 'overdue');
   });
 
-  it('routes open complaints', () => {
-    const route = routeByKeywords('Any open complaints?');
-    assert.equal(route.tool, 'open_complaints');
+  it('routes paid rent question by tenant name', () => {
+    const route = routeByKeywords('Can you tell me if David Lim has paid his rent this month?');
+    assert.equal(route.tool, 'tenant_monthly_rent');
+    assert.equal(route.input.identifier, 'David Lim');
   });
 });

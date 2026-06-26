@@ -50,6 +50,19 @@ function routeByKeywords(message) {
     return { tool: 'rent_roll', input: { status: 'all' } };
   }
 
+  const paidRentPatterns = [
+    /(?:has|did)\s+(.+?)\s+paid(?:\s+(?:his|her|their))?\s+rent/i,
+    /(?:tell me if|check if)\s+(.+?)\s+has paid(?:\s+(?:his|her|their))?\s+rent/i,
+    /(.+?)\s+paid(?:\s+(?:his|her|their))?\s+rent this month/i,
+  ];
+
+  for (const pattern of paidRentPatterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      return { tool: 'tenant_monthly_rent', input: { identifier: match[1].trim() } };
+    }
+  }
+
   const nextRentPatterns = [
     /next rent payment for (.+?)\??$/i,
     /rent payment for (.+?)\??$/i,
