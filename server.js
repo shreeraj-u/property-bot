@@ -45,6 +45,17 @@ function validateTwilioRequest(req, res, next) {
   return next();
 }
 
+const TWILIO_TIMEOUT_MS = Number(process.env.WEBHOOK_TIMEOUT_MS || 12000);
+
+function withWebhookTimeout(promise) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('webhook timeout')), TWILIO_TIMEOUT_MS);
+    }),
+  ]);
+}
+
 app.post('/webhook', validateTwilioRequest, async (req, res) => {
   const from = normalizePhone(req.body.From);
   const body = req.body.Body || '';
@@ -52,6 +63,7 @@ app.post('/webhook', validateTwilioRequest, async (req, res) => {
   console.log(`Message from ${from}: ${body}`);
 
   const twiml = new twilio.twiml.MessagingResponse();
+  const started = Date.now();
 
   try {
     const trimmed = body.trim();
@@ -59,16 +71,26 @@ app.post('/webhook', validateTwilioRequest, async (req, res) => {
       !trimmed ||
       ['hi', 'hello', 'hey', 'start', 'menu'].includes(trimmed.toLowerCase());
 
-    const messages = isGreeting
-      ? await handleFirstMessage(from)
-      : await handleIncomingMessage(from, body);
+    const messages = await withWebhookTimeout(
+      isGreeting
+        ? handleFirstMessage(from)
+        : handleIncomingMessage(from, body)
+    );
 
     for (const msg of messages) {
       twiml.message(msg);
     }
+
+    console.log(`Reply sent in ${Date.now() - started}ms`);
   } catch (err) {
-    console.error('Webhook error:', err);
-    twiml.message('Something went wrong. Please try again or type menu.');
+    console.error('Webhook error:', err.message || err);
+    if (err.message === 'webhook timeout') {
+      twiml.message(
+        'Sorry, that took too long. Please try again — e.g. "next rent payment for David Lim" or type help.'
+      );
+    } else {
+      twiml.message('Something went wrong. Please try again or type menu.');
+    }
   }
 
   res.type('text/xml').send(twiml.toString());

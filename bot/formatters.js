@@ -124,6 +124,41 @@ function formatMyRentStatus(payment, month) {
   return lines.join('\n');
 }
 
+function formatNextRentPayment(tenant) {
+  if (!tenant) return 'Tenant not found.';
+
+  const unit = tenant.units?.unit_number || '?';
+  const payments = (tenant.rent_payments || []).sort(
+    (a, b) => new Date(a.due_date) - new Date(b.due_date)
+  );
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const unpaid = payments.filter((p) => p.status !== 'paid');
+  const nextUnpaid = unpaid.find((p) => new Date(p.due_date) >= today) || unpaid[0];
+  const nextAny = payments.find((p) => new Date(p.due_date) >= today);
+
+  const payment = nextUnpaid || nextAny;
+
+  if (!payment) {
+    return `No upcoming rent payments found for ${tenant.full_name} (Unit ${unit}).`;
+  }
+
+  const lines = [
+    `Next rent payment for ${tenant.full_name} (Unit ${unit}):`,
+    `Amount: ${formatCurrency(payment.amount_paid)}`,
+    `Due: ${formatDate(payment.due_date)}`,
+    `Status: ${(payment.status || 'unknown').toUpperCase()}`,
+  ];
+
+  if (payment.paid_date) {
+    lines.push(`Paid on: ${formatDate(payment.paid_date)}`);
+  }
+
+  return lines.join('\n');
+}
+
 function formatLeaseInfo(lease, documentUrl) {
   if (!lease) return 'No active lease found on your account.';
 
@@ -196,6 +231,7 @@ module.exports = {
   formatExpiringLeases,
   formatTenantProfile,
   formatMyRentStatus,
+  formatNextRentPayment,
   formatLeaseInfo,
   formatComplaints,
   tenantMainMenu,

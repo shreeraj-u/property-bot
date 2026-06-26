@@ -9,6 +9,7 @@ const {
   formatRentRoll,
   formatExpiringLeases,
   formatTenantProfile,
+  formatNextRentPayment,
   formatComplaints,
   managerHelpMenu,
   splitMessage,
@@ -34,7 +35,14 @@ async function executeManagerTool(tool, input) {
       if (!input.identifier) return 'Please provide a unit number or tenant name.';
       const { data, error } = await getTenantProfile(input.identifier);
       if (error) return `Lookup failed: ${error.message}`;
+      if (!data) return 'Tenant not found.';
       return formatTenantProfile(data);
+    }
+    case 'tenant_next_payment': {
+      if (!input.identifier) return 'Please provide a tenant name or unit number.';
+      const { data, error } = await getTenantProfile(input.identifier);
+      if (error) return `Lookup failed: ${error.message}`;
+      return formatNextRentPayment(data);
     }
     case 'lease_document': {
       if (!input.identifier) return 'Please provide a unit number or tenant name.';
