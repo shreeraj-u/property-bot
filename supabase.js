@@ -699,7 +699,7 @@ async function getSubmissionByShortId(shortId) {
     .select(`
       *,
       tenants(full_name, phone_number),
-      rent_payments(amount_paid, due_date, status),
+      rent_payments!rent_payment_submissions_rent_payment_id_fkey(amount_paid, due_date, status),
       units!rent_payment_submissions_unit_id_fkey(unit_number)
     `)
     .eq('status', 'pending')
@@ -749,7 +749,7 @@ async function createProofSubmission({
     .select(`
       *,
       tenants(full_name, phone_number),
-      rent_payments(amount_paid, due_date, status),
+      rent_payments!rent_payment_submissions_rent_payment_id_fkey(amount_paid, due_date, status),
       units!rent_payment_submissions_unit_id_fkey(unit_number)
     `)
     .single();
@@ -789,7 +789,7 @@ async function approveSubmission(shortId, managerPhone) {
     .select(`
       *,
       tenants(full_name, phone_number),
-      rent_payments(amount_paid, due_date, status, paid_date),
+      rent_payments!rent_payment_submissions_rent_payment_id_fkey(amount_paid, due_date, status, paid_date),
       units!rent_payment_submissions_unit_id_fkey(unit_number)
     `)
     .single();
@@ -815,7 +815,7 @@ async function rejectSubmission(shortId, managerPhone, reason) {
     .select(`
       *,
       tenants(full_name, phone_number),
-      rent_payments(amount_paid, due_date, status),
+      rent_payments!rent_payment_submissions_rent_payment_id_fkey(amount_paid, due_date, status),
       units!rent_payment_submissions_unit_id_fkey(unit_number)
     `)
     .single();
