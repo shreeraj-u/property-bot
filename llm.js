@@ -187,6 +187,12 @@ const TOOLS = [
     },
   },
   {
+    name: 'dashboard_link',
+    description:
+      'Send a login link for the web dashboard. Use when the manager asks for the dashboard, web view, or a login link.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
     name: 'help',
     description: 'Show manager help menu when user asks what you can do.',
     input_schema: { type: 'object', properties: {} },
@@ -208,6 +214,7 @@ function getSystemPrompt() {
     'Use lease_document for lease PDF requests. ' +
     'Use open_complaints for complaint issues. ' +
     'Use vacant_units for empty/available units. ' +
+    'Use dashboard_link when the manager asks for the web dashboard or a login link. ' +
     'Use help for capability questions. Do not invent data.'
   );
 }

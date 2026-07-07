@@ -22,6 +22,42 @@ function parseManagerProofCommand(text) {
   return null;
 }
 
+async function notifyTenantProofApproved(submission) {
+  const tenantPhone = submission.tenants?.phone_number;
+  if (!tenantPhone) return { error: null };
+
+  const unit = submission.units?.unit_number || '?';
+  const month = formatMonthLabel(submission.payment_month);
+
+  return sendWhatsAppReply(
+    tenantPhone,
+    [
+      `Your rent payment proof for ${month} (Unit ${unit}) has been approved.`,
+      `Amount: ${formatCurrency(submission.rent_payments?.amount_paid)}`,
+      'Thank you — your rent status is now marked as PAID.',
+    ].join('\n')
+  );
+}
+
+async function notifyTenantProofRejected(submission) {
+  const tenantPhone = submission.tenants?.phone_number;
+  if (!tenantPhone) return { error: null };
+
+  const unit = submission.units?.unit_number || '?';
+  const month = formatMonthLabel(submission.payment_month);
+  const reason = submission.rejection_reason || 'Please try again.';
+
+  return sendWhatsAppReply(
+    tenantPhone,
+    [
+      `Your rent payment proof for ${month} (Unit ${unit}) was not accepted.`,
+      `Reason: ${reason}`,
+      '',
+      'Reply menu, then 4 to submit a new proof.',
+    ].join('\n')
+  );
+}
+
 async function handleManagerProofCommand(phoneNumber, text) {
   const command = parseManagerProofCommand(text);
   if (!command) return null;
@@ -32,21 +68,11 @@ async function handleManagerProofCommand(phoneNumber, text) {
       return formatDbError(error) || 'Could not approve submission. Check the id and try again.';
     }
 
-    const tenantPhone = data.tenants?.phone_number;
     const unit = data.units?.unit_number || '?';
     const month = formatMonthLabel(data.payment_month);
     const shortId = submissionShortId(data.id);
 
-    if (tenantPhone) {
-      await sendWhatsAppReply(
-        tenantPhone,
-        [
-          `Your rent payment proof for ${month} (Unit ${unit}) has been approved.`,
-          `Amount: ${formatCurrency(data.rent_payments?.amount_paid)}`,
-          'Thank you — your rent status is now marked as PAID.',
-        ].join('\n')
-      );
-    }
+    await notifyTenantProofApproved(data);
 
     return [
       `Approved submission ${shortId}.`,
@@ -65,25 +91,9 @@ async function handleManagerProofCommand(phoneNumber, text) {
     return formatDbError(error) || 'Could not reject submission. Check the id and try again.';
   }
 
-  const tenantPhone = data.tenants?.phone_number;
-  const unit = data.units?.unit_number || '?';
-  const month = formatMonthLabel(data.payment_month);
-  const shortId = submissionShortId(data.id);
-  const reason = data.rejection_reason || 'Please try again.';
+  await notifyTenantProofRejected(data);
 
-  if (tenantPhone) {
-    await sendWhatsAppReply(
-      tenantPhone,
-      [
-        `Your rent payment proof for ${month} (Unit ${unit}) was not accepted.`,
-        `Reason: ${reason}`,
-        '',
-        'Reply menu, then 4 to submit a new proof.',
-      ].join('\n')
-    );
-  }
-
-  return [`Rejected submission ${shortId}. Tenant notified.`].join('\n');
+  return [`Rejected submission ${submissionShortId(data.id)}. Tenant notified.`].join('\n');
 }
 
 async function notifyManagerOfProof(submission, signedUrl) {
@@ -111,4 +121,6 @@ module.exports = {
   parseManagerProofCommand,
   handleManagerProofCommand,
   notifyManagerOfProof,
+  notifyTenantProofApproved,
+  notifyTenantProofRejected,
 };

@@ -478,6 +478,7 @@ function managerHelpMenu() {
     '- APPROVE abc12345',
     '- REJECT abc12345 wrong amount',
     '',
+    'Type dashboard for a web dashboard login link.',
     'Type help anytime for this menu.',
   ].join('\n');
 }

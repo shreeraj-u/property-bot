@@ -89,6 +89,20 @@ async function executeManagerTool(tool, input) {
       if (error) return formatDbError(error) || 'Could not fetch vacant units.';
       return formatVacantUnits(data, describeFilters(filters));
     }
+    case 'dashboard_link': {
+      const { createMagicLink } = require('../lib/dashboardAuth');
+      try {
+        return [
+          'Your dashboard login link (valid 15 minutes):',
+          createMagicLink(),
+          '',
+          'Open it on any device to view rent status, documents, and complaints.',
+        ].join('\n');
+      } catch (error) {
+        console.error('Dashboard link failed:', error.message);
+        return 'Dashboard is not configured yet (set DASHBOARD_SECRET on the server).';
+      }
+    }
     case 'help':
     default:
       return managerHelpMenu();

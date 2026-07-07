@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <title>Sign in — Property Dashboard</title>
+  <link rel="stylesheet" href="/dashboard/assets/styles.css" />
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="card login-card">
+      <div class="brand-mark">P</div>
+      <h1>Property Dashboard</h1>
+      <p>Manager sign-in</p>
+
+      <p class="login-error" id="error"></p>
+
+      <form id="login-form">
+        <input type="password" id="password" placeholder="Dashboard password" autocomplete="current-password" required />
+        <button class="btn primary" type="submit">Sign in</button>
+      </form>
+
+      <p class="hint">
+        Or message <strong>dashboard</strong> to the property WhatsApp bot from the
+        manager phone to receive a one-tap login link.
+      </p>
+    </div>
+  </div>
+
+  <script>
+    const errorEl = document.getElementById('error');
+
+    if (new URLSearchParams(window.location.search).get('expired')) {
+      errorEl.textContent = 'That login link has expired — request a new one via WhatsApp.';
+    }
+
+    document.getElementById('login-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      errorEl.textContent = '';
+
+      const res = await fetch('/dashboard/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: document.getElementById('password').value }),
+      });
+
+      if (res.ok) {
+        window.location.href = '/dashboard';
+        return;
+      }
+
+      const body = await res.json().catch(() => ({}));
+      errorEl.textContent = body.error || 'Sign-in failed. Try again.';
+    });
+  </script>
+</body>
+</html>

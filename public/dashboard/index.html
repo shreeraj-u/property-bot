@@ -1,0 +1,578 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <title>Property Dashboard</title>
+  <link rel="stylesheet" href="/dashboard/assets/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script defer src="/dashboard/assets/app.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.7/dist/cdn.min.js"></script>
+</head>
+<body x-data="dashboard()" x-cloak>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">P</span> <span>Property<br />Dashboard</span></div>
+
+      <button class="nav-item" :class="view === 'overview' && 'active'" @click="go('overview')">
+        <span class="icon">◧</span> Overview
+      </button>
+      <button class="nav-item" :class="view === 'rent' && 'active'" @click="go('rent')">
+        <span class="icon">▦</span> Rent Board
+      </button>
+      <button class="nav-item" :class="view === 'documents' && 'active'" @click="go('documents')">
+        <span class="icon">▤</span> Documents
+      </button>
+      <button class="nav-item" :class="view === 'complaints' && 'active'" @click="go('complaints')">
+        <span class="icon">◍</span> Complaints
+      </button>
+      <button class="nav-item" :class="view === 'tenants' && 'active'" @click="go('tenants')">
+        <span class="icon">◔</span> Tenants
+      </button>
+
+      <div class="sidebar-footer">
+        <button class="nav-item" @click="logout()"><span class="icon">⏻</span> Sign out</button>
+      </div>
+    </aside>
+
+    <main class="main">
+
+      <!-- ============ OVERVIEW ============ -->
+      <template x-if="view === 'overview'">
+        <div>
+          <div class="page-head">
+            <div>
+              <h1 class="page-title">Overview</h1>
+              <p class="page-sub">The Orchard Residences · blocks A–C</p>
+            </div>
+            <div class="month-nav">
+              <button @click="changeMonth(-1)">‹</button>
+              <span class="label" x-text="monthLabel(month)"></span>
+              <button @click="changeMonth(1)">›</button>
+            </div>
+          </div>
+
+          <template x-if="!stats">
+            <div class="kpi-grid">
+              <div class="skeleton"></div><div class="skeleton"></div>
+              <div class="skeleton"></div><div class="skeleton"></div>
+            </div>
+          </template>
+
+          <template x-if="stats">
+            <div>
+              <div class="kpi-grid">
+                <div class="card kpi" @click="go('rent')">
+                  <div class="kpi-label">Rent collected</div>
+                  <div class="kpi-value" x-text="money(stats.rent.collected)"></div>
+                  <div class="kpi-sub">
+                    of <span x-text="money(stats.rent.expected)"></span> due ·
+                    <span x-text="pct(stats.rent.collected, stats.rent.expected) + '%'"></span>
+                  </div>
+                  <div class="progress"><div :style="`width:${pct(stats.rent.collected, stats.rent.expected)}%`"></div></div>
+                </div>
+
+                <div class="card kpi" @click="go('tenants')">
+                  <div class="kpi-label">Occupancy</div>
+                  <div class="kpi-value">
+                    <span x-text="stats.occupancy.occupied"></span><span class="muted" style="font-size:16px"> / <span x-text="stats.occupancy.total"></span></span>
+                  </div>
+                  <div class="kpi-sub"><span x-text="stats.occupancy.vacant"></span> vacant unit(s)</div>
+                </div>
+
+                <div class="card kpi" @click="go('complaints')">
+                  <div class="kpi-label">Open complaints</div>
+                  <div class="kpi-value" x-text="stats.complaints.open"></div>
+                  <div class="kpi-sub"><span x-text="stats.complaints.in_progress"></span> in progress</div>
+                </div>
+
+                <div class="card kpi" @click="goPendingProofs()">
+                  <div class="kpi-label">Pending proofs</div>
+                  <div class="kpi-value" x-text="stats.pending_proofs"></div>
+                  <div class="kpi-sub">payment proofs awaiting review</div>
+                </div>
+              </div>
+
+              <div class="two-col">
+                <div class="card">
+                  <h2 class="section-title">Collection trend</h2>
+                  <div style="height:260px; position:relative">
+                    <canvas x-ref="trend"></canvas>
+                  </div>
+                </div>
+
+                <div class="card">
+                  <h2 class="section-title">Needs attention</h2>
+
+                  <div class="attention-item" x-show="stats.rent.overdue > 0" @click="goRentOverdue()">
+                    <span class="count tone-overdue" x-text="stats.rent.overdue"></span>
+                    <span>overdue payment(s) this month</span>
+                    <span class="go">›</span>
+                  </div>
+
+                  <div class="attention-item" x-show="stats.pending_proofs > 0" @click="goPendingProofs()">
+                    <span class="count tone-pending" x-text="stats.pending_proofs"></span>
+                    <span>payment proof(s) to review</span>
+                    <span class="go">›</span>
+                  </div>
+
+                  <div class="attention-item" x-show="stats.expiring_leases > 0" @click="go('tenants')">
+                    <span class="count tone-pending" x-text="stats.expiring_leases"></span>
+                    <span>lease(s) expiring within 60 days</span>
+                    <span class="go">›</span>
+                  </div>
+
+                  <div class="attention-item" x-show="stats.complaints.open + stats.complaints.in_progress > 0" @click="go('complaints')">
+                    <span class="count tone-overdue" x-text="stats.complaints.open + stats.complaints.in_progress"></span>
+                    <span>unresolved complaint(s)</span>
+                    <span class="go">›</span>
+                  </div>
+
+                  <div class="empty" x-show="!stats.rent.overdue && !stats.pending_proofs && !stats.expiring_leases && !(stats.complaints.open + stats.complaints.in_progress)">
+                    All clear — nothing needs attention.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+
+      <!-- ============ RENT BOARD ============ -->
+      <template x-if="view === 'rent'">
+        <div>
+          <div class="page-head">
+            <div>
+              <h1 class="page-title">Rent Board</h1>
+              <p class="page-sub" x-show="rent">
+                <span class="status-chip tone-paid" x-text="rentCounts.paid + ' paid'"></span>
+                <span class="status-chip tone-pending" x-text="rentCounts.pending + ' pending'"></span>
+                <span class="status-chip tone-overdue" x-text="rentCounts.overdue + ' overdue'"></span>
+                <span class="status-chip tone-vacant" x-text="rentCounts.vacant + ' vacant'"></span>
+              </p>
+            </div>
+            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+              <div class="chip-row">
+                <button class="chip" :class="rentMode === 'grid' && 'active'" @click="rentMode = 'grid'">Grid</button>
+                <button class="chip" :class="rentMode === 'list' && 'active'" @click="rentMode = 'list'">List</button>
+              </div>
+              <div class="month-nav">
+                <button @click="changeMonth(-1)">‹</button>
+                <span class="label" x-text="monthLabel(month)"></span>
+                <button @click="changeMonth(1)">›</button>
+              </div>
+            </div>
+          </div>
+
+          <template x-if="!rent">
+            <div class="board"><div class="skeleton" style="height:300px"></div><div class="skeleton" style="height:300px"></div><div class="skeleton" style="height:300px"></div></div>
+          </template>
+
+          <template x-if="rent && rentMode === 'grid'">
+            <div class="board">
+              <template x-for="block in rentBlocks" :key="block.name">
+                <div class="card block-card">
+                  <h3 x-text="'Block ' + block.name"></h3>
+                  <template x-for="row in block.floors" :key="row.floor">
+                    <div class="floor-row">
+                      <span class="floor-label" x-text="String(row.floor).padStart(2, '0')"></span>
+                      <template x-for="unit in row.units" :key="unit.id">
+                        <div class="unit-cell"
+                             :class="'tone-' + unitTone(unit)"
+                             :title="unit.unit_number + ' — ' + (unit.tenant?.full_name || 'vacant') + ' · ' + unitToneLabel(unit)"
+                             @click="unit.tenant && openTenant(unit.tenant.id)">
+                          <span x-text="unit.unit_number"></span>
+                          <span class="cell-tenant" x-text="unit.tenant?.full_name || 'Vacant'"></span>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </template>
+
+          <template x-if="rent && rentMode === 'list'">
+            <div class="card" style="margin-top:14px">
+              <div class="toolbar">
+                <input type="search" placeholder="Search tenant or unit…" x-model="rentSearch" />
+                <select x-model="rentBlockFilter">
+                  <option value="all">All blocks</option>
+                  <option value="A">Block A</option>
+                  <option value="B">Block B</option>
+                  <option value="C">Block C</option>
+                </select>
+                <div class="chip-row">
+                  <template x-for="s in ['all', 'paid', 'pending', 'overdue', 'vacant']" :key="s">
+                    <button class="chip" :class="rentStatusFilter === s && 'active'" @click="rentStatusFilter = s" x-text="s"></button>
+                  </template>
+                </div>
+                <span class="spacer"></span>
+                <span class="muted" x-text="rentRows.length + ' unit(s)'"></span>
+              </div>
+
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr><th>Unit</th><th>Tenant</th><th>Type</th><th class="right">Rent</th><th>Status</th><th>Due</th><th>Paid</th></tr>
+                  </thead>
+                  <tbody>
+                    <template x-for="unit in rentRows" :key="unit.id">
+                      <tr class="clickable" @click="unit.tenant && openTenant(unit.tenant.id)">
+                        <td class="mono" x-text="unit.unit_number"></td>
+                        <td x-text="unit.tenant?.full_name || '—'"></td>
+                        <td x-text="unit.unit_type"></td>
+                        <td class="right mono" x-text="money(unit.payment?.amount_paid ?? unit.monthly_rent_price)"></td>
+                        <td><span class="status-chip" :class="'tone-' + unitTone(unit)" x-text="unitToneLabel(unit)"></span></td>
+                        <td class="muted" x-text="date(unit.payment?.due_date)"></td>
+                        <td class="muted" x-text="date(unit.payment?.paid_date)"></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+                <div class="empty" x-show="!rentRows.length">No units match these filters.</div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+
+      <!-- ============ DOCUMENTS ============ -->
+      <template x-if="view === 'documents'">
+        <div>
+          <div class="page-head">
+            <div>
+              <h1 class="page-title">Documents</h1>
+              <p class="page-sub">Payment proofs and lease agreements</p>
+            </div>
+          </div>
+
+          <div class="tabs">
+            <button class="tab" :class="docTab === 'proofs' && 'active'" @click="docTab = 'proofs'">Payment proofs</button>
+            <button class="tab" :class="docTab === 'leases' && 'active'" @click="docTab = 'leases'">Lease agreements</button>
+          </div>
+
+          <template x-if="docTab === 'proofs'">
+            <div>
+              <div class="toolbar">
+                <div class="chip-row">
+                  <template x-for="s in ['pending', 'approved', 'rejected', 'all']" :key="s">
+                    <button class="chip" :class="proofStatus === s && 'active'" @click="setProofStatus(s)" x-text="s"></button>
+                  </template>
+                </div>
+                <input type="month" x-model="proofMonth" @change="loadProofs()" />
+                <span class="spacer"></span>
+                <span class="muted" x-show="proofs" x-text="(proofs || []).length + ' submission(s)'"></span>
+              </div>
+
+              <template x-if="!proofs">
+                <div class="proof-grid"><div class="skeleton" style="height:240px"></div><div class="skeleton" style="height:240px"></div><div class="skeleton" style="height:240px"></div></div>
+              </template>
+
+              <div class="proof-grid" x-show="proofs">
+                <template x-for="proof in proofs || []" :key="proof.id">
+                  <div class="card proof-card">
+                    <div class="proof-img">
+                      <template x-if="proof.proof_url">
+                        <img :src="proof.proof_url" alt="Payment proof" loading="lazy" @click="proofZoom = proof.proof_url" />
+                      </template>
+                      <template x-if="!proof.proof_url">
+                        <span>Preview unavailable</span>
+                      </template>
+                    </div>
+                    <div class="proof-body">
+                      <div style="display:flex; justify-content:space-between; gap:8px; align-items:center">
+                        <span class="name" x-text="proof.tenants?.full_name"></span>
+                        <span class="status-chip"
+                              :class="proof.status === 'approved' ? 'tone-paid' : proof.status === 'rejected' ? 'tone-overdue' : 'tone-pending'"
+                              x-text="proof.status"></span>
+                      </div>
+                      <span class="muted">
+                        <span x-text="'Unit ' + (proof.units?.unit_number || '?')"></span> ·
+                        <span x-text="monthLabel(proof.payment_month)"></span> ·
+                        <span x-text="money(proof.rent_payments?.amount_paid)"></span>
+                      </span>
+                      <span class="muted" x-text="'Submitted ' + date(proof.submitted_at)"></span>
+                      <span class="muted" x-show="proof.status === 'rejected' && proof.rejection_reason" x-text="'Reason: ' + proof.rejection_reason"></span>
+                      <div class="proof-actions" x-show="proof.status === 'pending'">
+                        <button class="btn primary small" @click="approveProof(proof)">Approve</button>
+                        <button class="btn danger small" @click="rejectProof(proof)">Reject</button>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+              <div class="empty" x-show="proofs && !proofs.length">No submissions for this filter.</div>
+            </div>
+          </template>
+
+          <template x-if="docTab === 'leases'">
+            <div class="card">
+              <template x-if="!leases">
+                <div class="skeleton" style="height:200px"></div>
+              </template>
+              <div class="table-wrap" x-show="leases">
+                <table>
+                  <thead>
+                    <tr><th>Unit</th><th>Tenant</th><th>Term</th><th class="right">Rent</th><th class="right">Deposit</th><th>Status</th><th>Document</th></tr>
+                  </thead>
+                  <tbody>
+                    <template x-for="lease in leases || []" :key="lease.id">
+                      <tr>
+                        <td class="mono" x-text="lease.units?.unit_number"></td>
+                        <td x-text="lease.tenants?.full_name"></td>
+                        <td class="muted"><span x-text="date(lease.start_date)"></span> → <span x-text="date(lease.end_date)"></span></td>
+                        <td class="right mono" x-text="money(lease.monthly_rent)"></td>
+                        <td class="right mono" x-text="money(lease.deposit_amount)"></td>
+                        <td>
+                          <span class="status-chip" :class="lease.status === 'active' ? 'tone-paid' : 'tone-vacant'" x-text="lease.status"></span>
+                          <span class="status-chip tone-pending" x-show="lease.renewal_offered">renewal offered</span>
+                        </td>
+                        <td>
+                          <button class="btn small" x-show="lease.has_document" @click="openLeaseDoc(lease.id)">View PDF</button>
+                          <span class="muted" x-show="!lease.has_document">None on file</span>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+                <div class="empty" x-show="leases && !leases.length">No leases found.</div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+
+      <!-- ============ COMPLAINTS ============ -->
+      <template x-if="view === 'complaints'">
+        <div>
+          <div class="page-head">
+            <div>
+              <h1 class="page-title">Complaints</h1>
+              <p class="page-sub">Filed by tenants via WhatsApp</p>
+            </div>
+          </div>
+
+          <template x-if="!complaints">
+            <div class="kanban"><div class="skeleton" style="height:220px"></div><div class="skeleton" style="height:220px"></div><div class="skeleton" style="height:220px"></div></div>
+          </template>
+
+          <div class="kanban" x-show="complaints">
+            <template x-for="col in [
+              { status: 'open', label: 'Open' },
+              { status: 'in_progress', label: 'In progress' },
+              { status: 'resolved', label: 'Resolved' },
+            ]" :key="col.status">
+              <div class="kanban-col">
+                <h3><span x-text="col.label"></span> <span class="col-count" x-text="complaintsBy(col.status).length"></span></h3>
+
+                <template x-for="complaint in complaintsBy(col.status)" :key="complaint.id">
+                  <div class="card complaint-card">
+                    <div class="meta">
+                      <span class="cat-chip" x-text="complaint.category"></span>
+                      <span class="mono muted" x-text="complaint.units?.unit_number"></span>
+                      <span class="age" style="margin-left:auto"
+                            x-text="complaint.status === 'resolved' ? ('resolved ' + date(complaint.resolved_at)) : ageLabel(complaint.created_at)"></span>
+                    </div>
+                    <p class="desc" x-text="complaint.description"></p>
+                    <span class="muted" x-text="complaint.tenants?.full_name"></span>
+                    <div class="actions">
+                      <template x-if="complaint.status === 'open'">
+                        <button class="btn small" @click="setComplaintStatus(complaint, 'in_progress')">Start</button>
+                      </template>
+                      <template x-if="complaint.status !== 'resolved'">
+                        <button class="btn primary small" @click="setComplaintStatus(complaint, 'resolved')">Resolve</button>
+                      </template>
+                      <template x-if="complaint.status === 'resolved'">
+                        <button class="btn small" @click="setComplaintStatus(complaint, 'open')">Reopen</button>
+                      </template>
+                    </div>
+                  </div>
+                </template>
+
+                <div class="empty" x-show="!complaintsBy(col.status).length" style="padding:20px">None</div>
+              </div>
+            </template>
+          </div>
+        </div>
+      </template>
+
+      <!-- ============ TENANTS & LEASES ============ -->
+      <template x-if="view === 'tenants'">
+        <div>
+          <div class="page-head">
+            <div>
+              <h1 class="page-title">Tenants &amp; Leases</h1>
+              <p class="page-sub" x-show="tenants" x-text="(tenants || []).length + ' tenants'"></p>
+            </div>
+            <input type="search" placeholder="Search name, unit, or phone…" x-model="tenantSearch" style="min-width:240px" />
+          </div>
+
+          <template x-if="!tenants">
+            <div class="skeleton" style="height:300px"></div>
+          </template>
+
+          <template x-if="tenants">
+            <div>
+              <div class="card">
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr><th>Tenant</th><th>Unit</th><th>Type</th><th>Phone</th><th>Email</th><th>Lease ends</th><th class="right">Rent</th></tr>
+                    </thead>
+                    <tbody>
+                      <template x-for="tenant in filteredTenants" :key="tenant.id">
+                        <tr class="clickable" @click="openTenant(tenant.id)">
+                          <td style="font-weight:600" x-text="tenant.full_name"></td>
+                          <td class="mono" x-text="tenant.units?.unit_number"></td>
+                          <td x-text="tenant.units?.unit_type"></td>
+                          <td><a :href="waLink(tenant.phone_number)" target="_blank" rel="noopener" @click.stop x-text="tenant.phone_number"></a></td>
+                          <td class="muted" x-text="tenant.email"></td>
+                          <td x-text="date(tenant.active_lease?.end_date)"></td>
+                          <td class="right mono" x-text="money(tenant.active_lease?.monthly_rent ?? tenant.units?.monthly_rent_price)"></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                  <div class="empty" x-show="!filteredTenants.length">No tenants match your search.</div>
+                </div>
+              </div>
+
+              <div class="card" style="margin-top:14px">
+                <h2 class="section-title">Lease expiry timeline (next 12 months)</h2>
+                <template x-for="lease in leaseTimeline" :key="lease.id">
+                  <div class="timeline-row">
+                    <div class="who">
+                      <div x-text="lease.tenants?.full_name"></div>
+                      <div class="unit mono" x-text="lease.units?.unit_number"></div>
+                    </div>
+                    <div class="timeline-track">
+                      <div :style="`width:${timelineWidth(lease)}; background:${timelineColor(lease)}`"></div>
+                    </div>
+                    <div class="when">
+                      <span x-text="date(lease.end_date)"></span><br />
+                      <strong x-text="lease.days_left + 'd left'"></strong>
+                    </div>
+                  </div>
+                </template>
+                <div class="empty" x-show="!leaseTimeline.length">No active leases expiring in the next year.</div>
+              </div>
+
+              <div class="card" style="margin-top:14px">
+                <h2 class="section-title">Vacant units</h2>
+                <div class="vacant-grid">
+                  <template x-for="unit in vacantUnits || []" :key="unit.unit_number">
+                    <div class="card vacant-card">
+                      <div class="unit-no mono" x-text="unit.unit_number"></div>
+                      <div class="muted"><span x-text="unit.unit_type"></span> · <span x-text="unit.size_sqft"></span> sqft</div>
+                      <div style="font-weight:600; margin-top:4px"><span x-text="money(unit.monthly_rent_price)"></span><span class="muted">/mo</span></div>
+                      <div class="amen" x-text="(unit.amenities || []).join(' · ')"></div>
+                      <div class="amen" x-show="unit.notes" x-text="unit.notes"></div>
+                    </div>
+                  </template>
+                </div>
+                <div class="empty" x-show="!(vacantUnits || []).length">Fully occupied.</div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+
+    </main>
+  </div>
+
+  <!-- ============ TENANT DRAWER ============ -->
+  <template x-if="drawer.open">
+    <div>
+      <div class="drawer-backdrop" @click="closeDrawer()"></div>
+      <aside class="drawer">
+        <button class="drawer-close" @click="closeDrawer()">✕</button>
+
+        <template x-if="drawer.loading">
+          <div><div class="skeleton" style="height:80px; margin-bottom:12px"></div><div class="skeleton" style="height:200px"></div></div>
+        </template>
+
+        <template x-if="drawer.tenant">
+          <div>
+            <h2 x-text="drawer.tenant.full_name"></h2>
+            <p class="muted" style="margin:0">
+              Unit <span class="mono" x-text="drawer.tenant.units?.unit_number"></span> ·
+              <span x-text="drawer.tenant.units?.unit_type"></span> ·
+              <span x-text="drawer.tenant.units?.size_sqft"></span> sqft
+            </p>
+
+            <section>
+              <div class="kv"><span class="k">Phone</span><span class="v"><a :href="waLink(drawer.tenant.phone_number)" target="_blank" rel="noopener" x-text="drawer.tenant.phone_number"></a></span></div>
+              <div class="kv"><span class="k">Email</span><span class="v" x-text="drawer.tenant.email || '—'"></span></div>
+              <div class="kv"><span class="k">Emergency contact</span><span class="v" x-text="(drawer.tenant.emergency_contact_name || '—') + ' ' + (drawer.tenant.emergency_contact_phone || '')"></span></div>
+            </section>
+
+            <section>
+              <h2 class="section-title">Leases</h2>
+              <template x-for="lease in drawer.tenant.leases || []" :key="lease.id">
+                <div class="kv">
+                  <span class="k">
+                    <span x-text="date(lease.start_date)"></span> → <span x-text="date(lease.end_date)"></span><br />
+                    <span class="status-chip" :class="lease.status === 'active' ? 'tone-paid' : 'tone-vacant'" x-text="lease.status"></span>
+                  </span>
+                  <span class="v">
+                    <span x-text="money(lease.monthly_rent) + '/mo'"></span><br />
+                    <span class="muted" x-text="'Deposit ' + money(lease.deposit_amount)"></span><br />
+                    <button class="btn small" x-show="lease.has_document" @click="openLeaseDoc(lease.id)" style="margin-top:4px">Lease PDF</button>
+                  </span>
+                </div>
+              </template>
+            </section>
+
+            <section>
+              <h2 class="section-title">Payment history</h2>
+              <template x-for="payment in drawer.tenant.rent_payments || []" :key="payment.id">
+                <div class="pay-row">
+                  <span class="dot" :class="payment.status"></span>
+                  <span>
+                    <span x-text="monthLabel(String(payment.due_date).slice(0, 7))"></span><br />
+                    <span class="muted" x-text="payment.status === 'paid' ? ('paid ' + date(payment.paid_date)) : payment.status"></span>
+                  </span>
+                  <span class="amt mono" x-text="money(payment.amount_paid)"></span>
+                </div>
+              </template>
+              <div class="empty" x-show="!(drawer.tenant.rent_payments || []).length">No payment records.</div>
+            </section>
+
+            <section x-show="(drawer.tenant.proof_submissions || []).length">
+              <h2 class="section-title">Recent proof submissions</h2>
+              <template x-for="proof in drawer.tenant.proof_submissions || []" :key="proof.id">
+                <div class="pay-row">
+                  <span class="dot" :class="proof.status === 'approved' ? 'paid' : proof.status === 'rejected' ? 'overdue' : 'pending'"></span>
+                  <span>
+                    <span x-text="monthLabel(proof.payment_month)"></span><br />
+                    <span class="muted" x-text="proof.status"></span>
+                  </span>
+                  <a class="amt" href="#" x-show="proof.proof_url" @click.prevent="proofZoom = proof.proof_url">View</a>
+                </div>
+              </template>
+            </section>
+          </div>
+        </template>
+      </aside>
+    </div>
+  </template>
+
+  <!-- ============ PROOF LIGHTBOX ============ -->
+  <template x-if="proofZoom">
+    <div class="drawer-backdrop" style="display:grid; place-items:center; z-index:60; cursor:zoom-out" @click="proofZoom = null">
+      <img :src="proofZoom" style="max-width:92vw; max-height:92vh; border-radius:10px" alt="Payment proof" />
+    </div>
+  </template>
+
+  <!-- ============ TOASTS ============ -->
+  <div class="toast-wrap">
+    <template x-for="toast in toasts" :key="toast.id">
+      <div class="toast" :class="toast.isError && 'error'" x-text="toast.message"></div>
+    </template>
+  </div>
+
+</body>
+</html>

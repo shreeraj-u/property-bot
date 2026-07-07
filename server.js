@@ -4,11 +4,13 @@ const twilio = require('twilio');
 const { handleIncomingMessage, handleFirstMessage } = require('./bot/handler');
 const { sendWhatsAppReply, checkSupabaseConnection, downloadTwilioMedia } = require('./supabase');
 const { parseTwilioMedia } = require('./bot/media');
+const dashboardRouter = require('./routes/dashboard');
 
 const app = express();
 app.set('trust proxy', true);
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
+app.use(dashboardRouter);
 
 const GREETINGS = new Set(['hi', 'hello', 'hey', 'start', 'menu']);
 const USE_ASYNC_WEBHOOK =

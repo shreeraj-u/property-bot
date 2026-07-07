@@ -823,6 +823,345 @@ async function rejectSubmission(shortId, managerPhone, reason) {
   return { data, error };
 }
 
+const LEASE_BUCKET = 'lease-agreements';
+
+function shiftMonth(month, offset) {
+  const [year, mon] = month.split('-').map(Number);
+  const date = new Date(Date.UTC(year, mon - 1 + offset, 1));
+  return date.toISOString().slice(0, 7);
+}
+
+function firstError(...results) {
+  return results.map((r) => r?.error).find(Boolean) || null;
+}
+
+async function getDashboardStats(month) {
+  const targetMonth = month || new Date().toISOString().slice(0, 7);
+  const { start, end } = monthBounds(targetMonth);
+  const trendStart = `${shiftMonth(targetMonth, -3)}-01`;
+
+  const [payments, trend, units, complaints, pendingProofs, expiring] = await Promise.all([
+    supabase
+      .from('rent_payments')
+      .select('amount_paid, status')
+      .gte('due_date', start)
+      .lte('due_date', end),
+    supabase
+      .from('rent_payments')
+      .select('amount_paid, status, due_date')
+      .gte('due_date', trendStart)
+      .lte('due_date', end),
+    supabase.from('units').select('id, status'),
+    supabase.from('complaints').select('id, status').in('status', ['open', 'in_progress']),
+    supabase
+      .from('rent_payment_submissions')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'pending'),
+    getExpiringLeases({ days: 60 }),
+  ]);
+
+  const error = firstError(payments, trend, units, complaints, pendingProofs, expiring);
+  if (error) return { data: null, error };
+
+  const rent = { expected: 0, collected: 0, paid: 0, pending: 0, overdue: 0 };
+  for (const p of payments.data || []) {
+    const amount = Number(p.amount_paid) || 0;
+    rent.expected += amount;
+    if (p.status === 'paid') rent.collected += amount;
+    if (rent[p.status] != null) rent[p.status] += 1;
+  }
+
+  const trendByMonth = new Map();
+  for (const p of trend.data || []) {
+    const key = String(p.due_date).slice(0, 7);
+    const bucket = trendByMonth.get(key) || { month: key, expected: 0, collected: 0 };
+    const amount = Number(p.amount_paid) || 0;
+    bucket.expected += amount;
+    if (p.status === 'paid') bucket.collected += amount;
+    trendByMonth.set(key, bucket);
+  }
+
+  const occupancy = { total: 0, occupied: 0, vacant: 0 };
+  for (const unit of units.data || []) {
+    occupancy.total += 1;
+    if (unit.status === 'vacant') occupancy.vacant += 1;
+    else occupancy.occupied += 1;
+  }
+
+  const complaintCounts = { open: 0, in_progress: 0 };
+  for (const c of complaints.data || []) {
+    if (complaintCounts[c.status] != null) complaintCounts[c.status] += 1;
+  }
+
+  return {
+    data: {
+      month: targetMonth,
+      rent,
+      trend: [...trendByMonth.values()].sort((a, b) => a.month.localeCompare(b.month)),
+      occupancy,
+      complaints: complaintCounts,
+      pending_proofs: pendingProofs.count || 0,
+      expiring_leases: (expiring.data || []).length,
+    },
+    error: null,
+  };
+}
+
+async function getRentBoard(month) {
+  const targetMonth = month || new Date().toISOString().slice(0, 7);
+  const { start, end } = monthBounds(targetMonth);
+
+  const [units, tenants, payments] = await Promise.all([
+    supabase
+      .from('units')
+      .select('id, unit_number, block, floor, unit_type, size_sqft, monthly_rent_price, status')
+      .order('unit_number'),
+    supabase.from('tenants').select('id, full_name, phone_number, unit_id'),
+    supabase
+      .from('rent_payments')
+      .select('id, tenant_id, amount_paid, due_date, paid_date, status')
+      .gte('due_date', start)
+      .lte('due_date', end),
+  ]);
+
+  const error = firstError(units, tenants, payments);
+  if (error) return { data: null, error };
+
+  const tenantByUnit = new Map((tenants.data || []).map((t) => [t.unit_id, t]));
+  const paymentByTenant = new Map((payments.data || []).map((p) => [p.tenant_id, p]));
+
+  const board = (units.data || []).map((unit) => {
+    const tenant = tenantByUnit.get(unit.id) || null;
+    const payment = tenant ? paymentByTenant.get(tenant.id) || null : null;
+    return {
+      ...unit,
+      tenant: tenant
+        ? { id: tenant.id, full_name: tenant.full_name, phone_number: tenant.phone_number }
+        : null,
+      payment: payment
+        ? {
+            id: payment.id,
+            amount_paid: payment.amount_paid,
+            due_date: payment.due_date,
+            paid_date: payment.paid_date,
+            status: payment.status,
+          }
+        : null,
+    };
+  });
+
+  return { data: { month: targetMonth, units: board }, error: null };
+}
+
+async function attachProofUrls(submissions) {
+  const paths = [...new Set((submissions || []).map((s) => s.proof_path).filter(Boolean))];
+  if (!paths.length) return submissions || [];
+
+  const { data: signed } = await supabase.storage.from(PROOF_BUCKET).createSignedUrls(paths, 3600);
+  const urlByPath = new Map((signed || []).map((s) => [s.path, s.signedUrl]));
+
+  return (submissions || []).map((s) => ({
+    ...s,
+    short_id: submissionShortId(s.id),
+    proof_url: urlByPath.get(s.proof_path) || null,
+  }));
+}
+
+async function listProofSubmissions(filters = {}) {
+  let query = supabase
+    .from('rent_payment_submissions')
+    .select(`
+      *,
+      tenants(full_name, phone_number),
+      rent_payments!rent_payment_submissions_rent_payment_id_fkey(amount_paid, due_date, status),
+      units!rent_payment_submissions_unit_id_fkey(unit_number)
+    `)
+    .order('submitted_at', { ascending: false })
+    .limit(200);
+
+  if (filters.status && filters.status !== 'all') {
+    query = query.eq('status', filters.status);
+  }
+  if (filters.month) {
+    query = query.eq('payment_month', filters.month);
+  }
+
+  const { data, error } = await query;
+  if (error) return { data: null, error };
+
+  return { data: await attachProofUrls(data), error: null };
+}
+
+async function listAllLeases() {
+  const { data, error } = await supabase
+    .from('leases')
+    .select(`
+      id,
+      start_date,
+      end_date,
+      monthly_rent,
+      deposit_amount,
+      status,
+      renewal_offered,
+      document_path,
+      tenants(id, full_name, phone_number),
+      units!leases_unit_id_fkey(unit_number, block, floor, unit_type)
+    `)
+    .order('end_date');
+
+  if (error) return { data: null, error };
+
+  const enriched = (data || []).map((lease) => ({
+    ...lease,
+    has_document: Boolean(lease.document_path),
+    document_path: undefined,
+  }));
+
+  return { data: enriched, error: null };
+}
+
+async function getLeaseDocumentUrl(leaseId) {
+  const { data: lease, error } = await supabase
+    .from('leases')
+    .select('id, document_path, tenants(full_name)')
+    .eq('id', leaseId)
+    .maybeSingle();
+
+  if (error) return { url: null, error };
+  if (!lease?.document_path) return { url: null, error: new Error('No document on file') };
+
+  const { data, error: signError } = await supabase.storage
+    .from(LEASE_BUCKET)
+    .createSignedUrl(lease.document_path, 3600);
+
+  if (signError) return { url: null, error: signError };
+  return { url: data?.signedUrl, error: null };
+}
+
+async function listAllComplaints() {
+  const { data, error } = await supabase
+    .from('complaints')
+    .select(`
+      id,
+      category,
+      description,
+      status,
+      created_at,
+      resolved_at,
+      tenants(full_name, phone_number),
+      units!complaints_unit_id_fkey(unit_number, block, floor, unit_type)
+    `)
+    .order('created_at', { ascending: false })
+    .limit(300);
+
+  return { data, error };
+}
+
+const COMPLAINT_STATUSES = new Set(['open', 'in_progress', 'resolved']);
+
+async function updateComplaintStatus(complaintId, status) {
+  if (!COMPLAINT_STATUSES.has(status)) {
+    return { data: null, error: new Error(`Invalid complaint status: ${status}`) };
+  }
+
+  const { data, error } = await supabase
+    .from('complaints')
+    .update({
+      status,
+      resolved_at: status === 'resolved' ? new Date().toISOString() : null,
+    })
+    .eq('id', complaintId)
+    .select(`
+      id,
+      category,
+      description,
+      status,
+      created_at,
+      resolved_at,
+      tenants(full_name, phone_number),
+      units!complaints_unit_id_fkey(unit_number, block, floor, unit_type)
+    `)
+    .single();
+
+  return { data, error };
+}
+
+async function listTenantsDirectory() {
+  const { data, error } = await supabase
+    .from('tenants')
+    .select(`
+      id,
+      full_name,
+      phone_number,
+      email,
+      units!tenants_unit_id_fkey(unit_number, block, floor, unit_type, monthly_rent_price),
+      leases(id, start_date, end_date, status, monthly_rent)
+    `)
+    .order('full_name');
+
+  if (error) return { data: null, error };
+
+  const enriched = (data || []).map((tenant) => {
+    const activeLease = (tenant.leases || []).find((l) => l.status === 'active') || null;
+    return { ...tenant, leases: undefined, active_lease: activeLease };
+  });
+
+  return { data: enriched, error: null };
+}
+
+async function getTenantDetail(tenantId) {
+  const [tenant, leases, payments, submissions] = await Promise.all([
+    supabase
+      .from('tenants')
+      .select(`
+        id,
+        full_name,
+        phone_number,
+        email,
+        emergency_contact_name,
+        emergency_contact_phone,
+        units!tenants_unit_id_fkey(unit_number, block, floor, unit_type, size_sqft, monthly_rent_price, status)
+      `)
+      .eq('id', tenantId)
+      .maybeSingle(),
+    supabase
+      .from('leases')
+      .select('id, start_date, end_date, monthly_rent, deposit_amount, status, renewal_offered, document_path')
+      .eq('tenant_id', tenantId)
+      .order('end_date', { ascending: false }),
+    supabase
+      .from('rent_payments')
+      .select('id, amount_paid, due_date, paid_date, status, payment_method')
+      .eq('tenant_id', tenantId)
+      .order('due_date', { ascending: false })
+      .limit(12),
+    supabase
+      .from('rent_payment_submissions')
+      .select('id, payment_month, proof_path, status, submitted_at, rejection_reason')
+      .eq('tenant_id', tenantId)
+      .order('submitted_at', { ascending: false })
+      .limit(12),
+  ]);
+
+  const error = firstError(tenant, leases, payments, submissions);
+  if (error) return { data: null, error };
+  if (!tenant.data) return { data: null, error: new Error('Tenant not found') };
+
+  return {
+    data: {
+      ...tenant.data,
+      leases: (leases.data || []).map((l) => ({
+        ...l,
+        has_document: Boolean(l.document_path),
+        document_path: undefined,
+      })),
+      rent_payments: payments.data || [],
+      proof_submissions: await attachProofUrls(submissions.data),
+    },
+    error: null,
+  };
+}
+
 module.exports = {
   supabase,
   identifySender,
@@ -860,4 +1199,13 @@ module.exports = {
   createProofSubmission,
   approveSubmission,
   rejectSubmission,
+  getDashboardStats,
+  getRentBoard,
+  listProofSubmissions,
+  listAllLeases,
+  getLeaseDocumentUrl,
+  listAllComplaints,
+  updateComplaintStatus,
+  listTenantsDirectory,
+  getTenantDetail,
 };
