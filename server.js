@@ -2,7 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const twilio = require('twilio');
 const { handleIncomingMessage, handleFirstMessage } = require('./bot/handler');
-const { sendWhatsAppReply, checkSupabaseConnection } = require('./supabase');
+const { sendWhatsAppReply, checkSupabaseConnection, downloadTwilioMedia } = require('./supabase');
+const { parseTwilioMedia } = require('./bot/media');
 
 const app = express();
 app.set('trust proxy', true);
@@ -55,17 +56,32 @@ function validateTwilioRequest(req, res, next) {
   return next();
 }
 
-async function buildReplyMessages(from, body) {
-  return isGreeting(body)
-    ? handleFirstMessage(from)
-    : handleIncomingMessage(from, body);
+async function buildReplyMessages(from, body, mediaPayload) {
+  const hasMedia = Boolean(mediaPayload?.buffer);
+  if (!hasMedia && isGreeting(body)) {
+    return handleFirstMessage(from);
+  }
+  return handleIncomingMessage(from, body, mediaPayload);
 }
 
-async function processWebhookAsync(from, body) {
+async function resolveMediaPayload(body) {
+  const mediaMeta = parseTwilioMedia(body);
+  if (!mediaMeta) return null;
+
+  const { buffer, error } = await downloadTwilioMedia(mediaMeta.url);
+  if (error) {
+    console.error('Twilio media download failed:', error.message);
+    return { ...mediaMeta, buffer: null, downloadError: error.message };
+  }
+
+  return { ...mediaMeta, buffer };
+}
+
+async function processWebhookAsync(from, body, mediaPayload) {
   const started = Date.now();
 
   try {
-    const messages = await buildReplyMessages(from, body);
+    const messages = await buildReplyMessages(from, body, mediaPayload);
     const { error } = await sendWhatsAppReply(from, messages);
 
     if (error) {
@@ -84,21 +100,23 @@ app.post('/webhook', validateTwilioRequest, async (req, res) => {
   const from = normalizePhone(req.body.From);
   const body = req.body.Body || '';
 
-  console.log(`Message from ${from}: ${body}`);
+  console.log(`Message from ${from}: ${body}${req.body.NumMedia ? ` (${req.body.NumMedia} media)` : ''}`);
 
   if (USE_ASYNC_WEBHOOK) {
+    const mediaPayload = await resolveMediaPayload(req.body);
     res.type('text/xml').send(new twilio.twiml.MessagingResponse().toString());
     setImmediate(() => {
-      processWebhookAsync(from, body);
+      processWebhookAsync(from, body, mediaPayload);
     });
     return;
   }
 
   const twiml = new twilio.twiml.MessagingResponse();
   const started = Date.now();
+  const mediaPayload = await resolveMediaPayload(req.body);
 
   try {
-    const messages = await buildReplyMessages(from, body);
+    const messages = await buildReplyMessages(from, body, mediaPayload);
     for (const msg of messages) {
       twiml.message(msg);
     }

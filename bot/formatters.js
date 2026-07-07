@@ -39,6 +39,51 @@ function formatMonthLabel(month) {
   });
 }
 
+function formatProofMonthPrompt(payments) {
+  if (!payments?.length) {
+    return 'No pending or overdue rent payments need proof right now.';
+  }
+
+  if (payments.length === 1) {
+    return null;
+  }
+
+  const lines = payments.map((p, index) => {
+    const label = formatMonthLabel(p.payment_month);
+    return `${index + 1}. ${label} — ${formatCurrency(p.amount_paid)} (${p.status})`;
+  });
+
+  return [
+    'Which month is this proof for?',
+    '',
+    ...lines,
+    '',
+    `Reply 1–${payments.length}, or cancel to go back.`,
+  ].join('\n');
+}
+
+function formatProofUploadPrompt(payment) {
+  const label = formatMonthLabel(payment.payment_month);
+  return [
+    `Submit proof for ${label} (${formatCurrency(payment.amount_paid)} due).`,
+    '',
+    'Send a photo of your payment receipt or bank transfer screenshot.',
+    'Reply cancel to go back.',
+  ].join('\n');
+}
+
+function formatProofConfirmPrompt(payment) {
+  const label = formatMonthLabel(payment.payment_month);
+  return [
+    'Confirm rent payment proof submission:',
+    `Month: ${label}`,
+    `Amount: ${formatCurrency(payment.amount_paid)}`,
+    `Status: ${(payment.status || 'unknown').toUpperCase()}`,
+    '',
+    'Reply YES to submit for manager review, or NO to cancel.',
+  ].join('\n');
+}
+
 function sumPayments(payments) {
   return (payments || []).reduce((total, payment) => total + Number(payment.amount_paid || 0), 0);
 }
@@ -281,6 +326,10 @@ function formatMyRentStatus(payment, month) {
     lines.push(`Paid on: ${formatDate(payment.paid_date)}`);
   }
 
+  if (payment.status === 'pending' || payment.status === 'overdue') {
+    lines.push('', 'Reply 4 to submit payment proof.');
+  }
+
   return lines.join('\n');
 }
 
@@ -402,6 +451,7 @@ function tenantMainMenu(tenant) {
     '1. Check my rent status',
     '2. View lease info',
     '3. File a complaint',
+    '4. Submit rent payment proof',
     '',
     'Reply with a number, or type menu anytime.',
   ].join('\n');
@@ -424,6 +474,10 @@ function managerHelpMenu() {
     '- Open maintenance complaints in block B',
     '- Send lease for [tenant name]',
     '',
+    'Rent proof review:',
+    '- APPROVE abc12345',
+    '- REJECT abc12345 wrong amount',
+    '',
     'Type help anytime for this menu.',
   ].join('\n');
 }
@@ -432,6 +486,7 @@ module.exports = {
   WHATSAPP_MAX,
   formatCurrency,
   formatDate,
+  formatMonthLabel,
   splitMessage,
   formatRentRoll,
   formatRentSummary,
@@ -439,6 +494,9 @@ module.exports = {
   formatTenantProfile,
   formatTenantByFields,
   formatMyRentStatus,
+  formatProofMonthPrompt,
+  formatProofUploadPrompt,
+  formatProofConfirmPrompt,
   formatNextRentPayment,
   formatTenantMonthlyRent,
   formatLeaseInfo,

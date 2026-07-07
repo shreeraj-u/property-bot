@@ -3,11 +3,17 @@ const { tenantMainMenu, managerHelpMenu, splitMessage } = require('./formatters'
 const { updateSession, resetSession } = require('./session');
 const { handleTenantMessage, isGlobalCommand } = require('./tenantFlows');
 const { handleManagerMessage } = require('./managerFlows');
+const { handleManagerProofCommand, parseManagerProofCommand } = require('./rentProofManager');
 
-async function handleIncomingMessage(phoneNumber, body) {
+async function handleIncomingMessage(phoneNumber, body, mediaPayload = null) {
   const text = (body || '').trim();
 
   if (isManagerPhone(phoneNumber)) {
+    if (parseManagerProofCommand(text)) {
+      const reply = await handleManagerProofCommand(phoneNumber, text);
+      return splitMessage(reply);
+    }
+
     if (isGlobalCommand(text) && ['menu', 'help', 'start'].includes(text.toLowerCase())) {
       return splitMessage(managerHelpMenu());
     }
@@ -23,7 +29,7 @@ async function handleIncomingMessage(phoneNumber, body) {
   const { tenant } = await identifySender(phoneNumber);
 
   if (tenant) {
-    const reply = await handleTenantMessage(tenant, phoneNumber, body);
+    const reply = await handleTenantMessage(tenant, phoneNumber, body, mediaPayload);
     return splitMessage(reply);
   }
 

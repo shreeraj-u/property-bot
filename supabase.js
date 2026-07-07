@@ -543,7 +543,7 @@ async function clearSession(phoneNumber) {
   return { error };
 }
 
-async function sendWhatsAppReply(phoneNumber, messages) {
+async function sendWhatsAppReply(phoneNumber, messages, mediaUrl) {
   const from = process.env.TWILIO_WHATSAPP_FROM;
   if (!from) {
     console.warn('sendWhatsAppReply skipped: TWILIO_WHATSAPP_FROM not set');
@@ -556,10 +556,15 @@ async function sendWhatsAppReply(phoneNumber, messages) {
   const list = Array.isArray(messages) ? messages : [messages];
 
   try {
-    for (const body of list) {
-      if (body) {
-        await getTwilioClient().messages.create({ from, to, body });
+    for (let i = 0; i < list.length; i += 1) {
+      const body = list[i];
+      if (!body) continue;
+
+      const payload = { from, to, body };
+      if (mediaUrl && i === 0) {
+        payload.mediaUrl = [mediaUrl];
       }
+      await getTwilioClient().messages.create(payload);
     }
     return { error: null };
   } catch (error) {
@@ -568,13 +573,13 @@ async function sendWhatsAppReply(phoneNumber, messages) {
   }
 }
 
-async function notifyManager(message) {
+async function notifyManager(message, mediaUrl) {
   if (!process.env.MANAGER_PHONE) {
     console.warn('notifyManager skipped: MANAGER_PHONE not set');
     return { error: new Error('Missing MANAGER_PHONE') };
   }
 
-  return sendWhatsAppReply(process.env.MANAGER_PHONE, message);
+  return sendWhatsAppReply(process.env.MANAGER_PHONE, message, mediaUrl);
 }
 
 async function checkSupabaseConnection() {
@@ -600,6 +605,222 @@ function formatDbError(error) {
     return 'Could not reach the database. Check Supabase URL/key on Railway and try again.';
   }
   return `Database error: ${message}`;
+}
+
+const PROOF_BUCKET = 'rent-payment-proofs';
+
+function submissionShortId(id) {
+  return String(id || '').replace(/-/g, '').slice(0, 8).toLowerCase();
+}
+
+async function downloadTwilioMedia(mediaUrl) {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+
+  if (!accountSid || !authToken) {
+    return { buffer: null, error: new Error('Missing Twilio credentials') };
+  }
+
+  const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
+  const response = await fetchWithRetry(mediaUrl, {
+    headers: { Authorization: `Basic ${auth}` },
+  });
+
+  if (!response.ok) {
+    return { buffer: null, error: new Error(`Failed to download media (${response.status})`) };
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  return { buffer, error: null };
+}
+
+async function uploadProofBuffer(tenantId, paymentMonth, submissionId, buffer, contentType) {
+  const { extensionForContentType } = require('./bot/media');
+  const ext = extensionForContentType(contentType);
+  const proofPath = `${tenantId}/${paymentMonth}/${submissionId}.${ext}`;
+
+  const { error } = await supabase.storage.from(PROOF_BUCKET).upload(proofPath, buffer, {
+    contentType: contentType || 'image/jpeg',
+    upsert: false,
+  });
+
+  if (error) return { proofPath: null, error };
+  return { proofPath, error: null };
+}
+
+async function getProofSignedUrl(proofPath, expiresIn = 3600) {
+  const { data, error } = await supabase.storage
+    .from(PROOF_BUCKET)
+    .createSignedUrl(proofPath, expiresIn);
+
+  if (error) return { url: null, error };
+  return { url: data?.signedUrl, error: null };
+}
+
+async function listEligibleProofPayments(tenantId) {
+  const { data: payments, error } = await supabase
+    .from('rent_payments')
+    .select('id, amount_paid, due_date, status')
+    .eq('tenant_id', tenantId)
+    .in('status', ['pending', 'overdue'])
+    .order('due_date', { ascending: false });
+
+  if (error) return { data: null, error };
+  if (!payments?.length) return { data: [], error: null };
+
+  const paymentIds = payments.map((p) => p.id);
+  const { data: pendingSubs, error: subError } = await supabase
+    .from('rent_payment_submissions')
+    .select('rent_payment_id')
+    .in('rent_payment_id', paymentIds)
+    .eq('status', 'pending');
+
+  if (subError) return { data: null, error: subError };
+
+  const pendingSet = new Set((pendingSubs || []).map((s) => s.rent_payment_id));
+  const eligible = payments
+    .filter((p) => !pendingSet.has(p.id))
+    .map((p) => ({
+      ...p,
+      payment_month: p.due_date.slice(0, 7),
+    }));
+
+  return { data: eligible, error: null };
+}
+
+async function getSubmissionByShortId(shortId) {
+  const needle = String(shortId || '').trim().toLowerCase();
+  if (!needle || needle.length < 6) {
+    return { data: null, error: new Error('Invalid submission id') };
+  }
+
+  const { data: submissions, error } = await supabase
+    .from('rent_payment_submissions')
+    .select(`
+      *,
+      tenants(full_name, phone_number),
+      rent_payments(amount_paid, due_date, status),
+      units!rent_payment_submissions_unit_id_fkey(unit_number)
+    `)
+    .eq('status', 'pending')
+    .order('submitted_at', { ascending: false })
+    .limit(50);
+
+  if (error) return { data: null, error };
+
+  const match = (submissions || []).find(
+    (s) => submissionShortId(s.id) === needle || s.id.startsWith(needle)
+  );
+
+  return { data: match || null, error: match ? null : new Error('Submission not found') };
+}
+
+async function createProofSubmission({
+  tenantId,
+  rentPaymentId,
+  unitId,
+  paymentMonth,
+  proofPath,
+  twilioMediaSid,
+}) {
+  const { data: existing, error: existingError } = await supabase
+    .from('rent_payment_submissions')
+    .select('id')
+    .eq('rent_payment_id', rentPaymentId)
+    .eq('status', 'pending')
+    .maybeSingle();
+
+  if (existingError) return { data: null, error: existingError };
+  if (existing) {
+    return { data: null, error: new Error('A proof for this month is already pending review.') };
+  }
+
+  const { data, error } = await supabase
+    .from('rent_payment_submissions')
+    .insert({
+      tenant_id: tenantId,
+      rent_payment_id: rentPaymentId,
+      unit_id: unitId,
+      payment_month: paymentMonth,
+      proof_path: proofPath,
+      status: 'pending',
+      twilio_media_sid: twilioMediaSid || null,
+    })
+    .select(`
+      *,
+      tenants(full_name, phone_number),
+      rent_payments(amount_paid, due_date, status),
+      units!rent_payment_submissions_unit_id_fkey(unit_number)
+    `)
+    .single();
+
+  return { data, error };
+}
+
+async function approveSubmission(shortId, managerPhone) {
+  const { data: submission, error: findError } = await getSubmissionByShortId(shortId);
+  if (findError || !submission) {
+    return { data: null, error: findError || new Error('Submission not found') };
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const reviewedAt = new Date().toISOString();
+
+  const { error: paymentError } = await supabase
+    .from('rent_payments')
+    .update({
+      status: 'paid',
+      paid_date: today,
+      payment_method: 'bank_transfer',
+      proof_submission_id: submission.id,
+    })
+    .eq('id', submission.rent_payment_id);
+
+  if (paymentError) return { data: null, error: paymentError };
+
+  const { data, error } = await supabase
+    .from('rent_payment_submissions')
+    .update({
+      status: 'approved',
+      reviewed_at: reviewedAt,
+      reviewed_by: managerPhone,
+    })
+    .eq('id', submission.id)
+    .select(`
+      *,
+      tenants(full_name, phone_number),
+      rent_payments(amount_paid, due_date, status, paid_date),
+      units!rent_payment_submissions_unit_id_fkey(unit_number)
+    `)
+    .single();
+
+  return { data, error };
+}
+
+async function rejectSubmission(shortId, managerPhone, reason) {
+  const { data: submission, error: findError } = await getSubmissionByShortId(shortId);
+  if (findError || !submission) {
+    return { data: null, error: findError || new Error('Submission not found') };
+  }
+
+  const { data, error } = await supabase
+    .from('rent_payment_submissions')
+    .update({
+      status: 'rejected',
+      reviewed_at: new Date().toISOString(),
+      reviewed_by: managerPhone,
+      rejection_reason: reason || 'Rejected by manager',
+    })
+    .eq('id', submission.id)
+    .select(`
+      *,
+      tenants(full_name, phone_number),
+      rent_payments(amount_paid, due_date, status),
+      units!rent_payment_submissions_unit_id_fkey(unit_number)
+    `)
+    .single();
+
+  return { data, error };
 }
 
 module.exports = {
@@ -629,4 +850,14 @@ module.exports = {
   sanitizeFilterValue,
   applyRecordFilters,
   parseUnitNumber,
+  PROOF_BUCKET,
+  submissionShortId,
+  downloadTwilioMedia,
+  uploadProofBuffer,
+  getProofSignedUrl,
+  listEligibleProofPayments,
+  getSubmissionByShortId,
+  createProofSubmission,
+  approveSubmission,
+  rejectSubmission,
 };

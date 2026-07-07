@@ -38,6 +38,31 @@ describe('webhook', () => {
     assert.equal(res.status, 200);
     assert.match(res.text, /isn't registered/i);
   });
+
+  it('routes manager APPROVE command', async () => {
+    const supabasePath = require.resolve('../supabase');
+    const rentProofPath = require.resolve('../bot/rentProofManager');
+    const handlerPath = require.resolve('../bot/handler');
+    delete require.cache[handlerPath];
+    delete require.cache[rentProofPath];
+
+    const supabase = require(supabasePath);
+    supabase.approveSubmission = async () => ({
+      data: {
+        id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+        payment_month: '2026-06',
+        tenants: { full_name: 'Aisha Rahman', phone_number: '+6512345678' },
+        units: { unit_number: 'A-02-1' },
+        rent_payments: { amount_paid: 2500 },
+      },
+      error: null,
+    });
+    supabase.sendWhatsAppReply = async () => ({ error: null });
+
+    const { handleIncomingMessage } = require('../bot/handler');
+    const messages = await handleIncomingMessage('+6588907746', 'APPROVE a1b2c3d4');
+    assert.match(messages[0], /Approved submission/i);
+  });
 });
 
 describe('webhook integration', { skip: !process.env.RUN_INTEGRATION }, () => {
